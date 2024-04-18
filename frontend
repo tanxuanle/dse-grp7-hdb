@@ -1,3 +1,19 @@
+################################ LOAD PACKAGES ################################
+library(shiny)
+library(plotly)
+library(dplyr)
+library(shinyWidgets)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(RColorBrewer)
+library(stringr)
+library(DT)
+library(bslib)
+library(shinythemes)
+library(fastDummies)
+library(ipred)
+library(rsconnect)
 
 ############################## READING DATA ###################################
 
