@@ -7,7 +7,7 @@ Our web application serves as a comprehensive resource for all prospective buyer
 
 ## How can you access our RShiny Application?
 **1. Download the data files**
-* Visit our Google Drive to access all data files required for our application.
+* Visit our Google Drive to access the app.R file and all other data files required for our application.
 https://drive.google.com/drive/folders/1rVIPNjGgv1XRqYiTPv0tMLv75ieVhhzr?usp=sharing
 
 **2. Save all downloaded files in the same directory.**
@@ -19,12 +19,12 @@ The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, le
 * Run the application code file in your RStudio.
 
 ## Repository Structure
-* /backend → Files used for data cleaning and modelling
+* /backend → Files used for data handling and modelling
   * best-model → File for the final selected model (bagging)
   * data-manipulation → File on how data was tidied and used
   * model-building-selection → File on training and testing of other models
-* /data → raw datasets used before data cleaning manipulation
-* /frontend → File for building our Rshiny application
+* /data → Raw datasets used before data cleaning manipulation
+* /frontend → File for our Rshiny application
 * README.md → Contains instructions on downloading and running our application.
 
 ## Data Sources:
