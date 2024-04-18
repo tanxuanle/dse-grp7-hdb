@@ -23,7 +23,7 @@ The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, le
 
 
 ## Data Sources:
-1. Resale HDB data: data.gov.sg
+1. Resale HDB data: data.gov.sg <br>
 Data wrangling is conducted to obtain the summarised dataset ("resale_prices.csv") for HDB Resale data from 2010 to 2024.
 
 
