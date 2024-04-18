@@ -7,7 +7,7 @@ Our web application serves as a comprehensive resource for all prospective buyer
 
 ## How can you access our RShiny Application?
 **1. Download the data files**
-* Visit our Google Drive to access all data files. (recommended)
+* Visit our Google Drive to access all data files required for our application. (recommended)
 https://drive.google.com/drive/folders/1rVIPNjGgv1XRqYiTPv0tMLv75ieVhhzr?usp=sharing
 
 Note: Most data files are uploaded in /data except for model_bagging_9.rds and resale_prices.csv.
@@ -23,9 +23,11 @@ The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, le
 
 
 ## Data Sources:
+1. Resale HDB data: data.gov.sg
+Data wrangling is conducted to obtain the summarised dataset ("resale_prices.csv") for HDB Resale data from 2010 to 2024.
 
 
-References: 
--- fastDummies package
--- hdb image 
+## References: 
+* Kaplan, J. & Schlegel, B. (2023). fastDummies: Fast Creation of Dummy (Binary) Columns and Rows from Categorical Variables. Version 1.7.1. URL: https://github.com/jacobkap/fastDummies, https://jacobkap.github.io/fastDummies/.
+* (2023).HDB Image [Photograph]. Gov.sg. 
 
