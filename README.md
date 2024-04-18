@@ -26,6 +26,37 @@ The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, le
 1. Resale HDB data: data.gov.sg <br>
 Data wrangling is conducted to obtain the summarised dataset ("resale_prices.csv") for HDB Resale data from 2010 to 2024.
 
+2. Master Plan 2019 Subzone Boundary (No Sea): data.gov.sg <br>
+https://beta.data.gov.sg/collections/1749/datasets/d_8594ae9ff96d0c708bc2af633048edfb/view
+
+3. Sample Household Survey: HDB Resident Population by Geographical Distribution: data.gov.sg <br>
+https://beta.data.gov.sg/collections/179/datasets/d_0a6c6d71f6fa14e2d27e406f1d018439/view
+
+4. Hawker Centres: nea.gov.sg <br>
+https://www.nea.gov.sg/docs/default-source/hawker-centres-documents/list-of-hcs_28-sep-2023.pdf
+
+5. General information of schools: data.gov.sg <br> 
+https://beta.data.gov.sg/datasets/d_688b934f82c1059ed0a6993d2a829089/view 
+
+6. Supermarkets: data.gov.sg <br> 
+https://beta.data.gov.sg/datasets/d_11edd0117280c5776651d7891114c88c/view
+
+7. Shopping Malls: wikipedia.org <br> 
+https://en.wikipedia.org/wiki/List_of_shopping_malls_in_Singapore
+
+8. Hospitals and Polyclinics: wikipedia.org <br> 
+https://en.wikipedia.org/wiki/List_of_hospitals_in_Singapore 
+
+9. Parks: data.gov.sg <br> 
+https://beta.data.gov.sg/collections/1491/datasets/d_e7289d9a50e45bf1174590e184e6631c/view 
+
+10. Buses: wikipedia.org <br> 
+https://en.wikipedia.org/wiki/List_of_bus_routes_in_Singapore
+
+11. MRT and LRT: mrtmapsingapore.com <br> 
+MRT: https://mrtmapsingapore.com/mrt-stations-singapore/ 
+LRT:  https://mrtmapsingapore.com/lrt-stations/ 
+
 
 ## References: 
 * Kaplan, J. & Schlegel, B. (2023). fastDummies: Fast Creation of Dummy (Binary) Columns and Rows from Categorical Variables. Version 1.7.1. URL: https://github.com/jacobkap/fastDummies, https://jacobkap.github.io/fastDummies/.
