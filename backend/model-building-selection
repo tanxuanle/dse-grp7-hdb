@@ -1,0 +1,803 @@
+#check for normality of continuous variables 
+#install.packages("Hmisc")
+library(Hmisc)
+
+final1 %>% 
+  select(floor_area_sqm, remaining_lease, max_floor_lvl, nearest_bus_distance, bus_within_2km, nearest_park_distance) %>%
+  hist.data.frame()
+
+final1 %>% 
+  select(parks_within_2km, distance_to_nearest_hawker, hawkers_within_2km, distance_to_nearest_healthcare, healthcare_within_2km, distance_to_nearest_mall) %>%
+  hist.data.frame()
+
+final1 %>% 
+  select(malls_within_2km, distance_to_nearest_school, schools_within_2km, distance_to_nearest_supermarket, supermarkets_within_2km, nearest_mrt_lrt_distance, mrt_lrt_within_2km) %>%
+  hist.data.frame()
+
+#removing influential outliers of resale price using COOKS
+places = influence.measures(model)[[1]]
+
+places1 = data.frame(places)
+
+influential = places1 %>%
+  mutate(id = row_number()) %>%
+  select(cook.d, id) %>%
+  filter(cook.d > 1) #none to remove
+
+#getting train and test data
+set.seed(1) #20%-30 for training instead 
+trainsample= final1 %>%
+  group_by(year, flat_type) %>%
+  slice_sample(prop=0.2) %>%
+  mutate(resale_price_lg = log(resale_price))
+
+testsample= anti_join(final1, trainsample, by="id") %>%
+  mutate(resale_price_lg = log(resale_price))
+
+##Hedonic model for baseline comparison (linear regression)
+#install.packages("olsrr")
+#library(olsrr)
+#library(MASS)
+
+model = lm(resale_price_lg ~ year + month + town + flat_type + floor_area_sqm + remaining_lease + distance_to_cbd + nearest_mrt_lrt_distance, data = trainsample)
+  
+summary(model)
+#plot homoscedasticity and normality
+res=resid(model)
+
+stud=rstandard(model)
+
+par(mfcol = c(1,2)) 
+
+plot(fitted(model),res)
+
+ggplot(data=trainsample, aes(x=stud)) + 
+  geom_histogram(fill="steelblue", color="black")
+
+#  residual error calculation
+
+predicted = data.frame(predict(model, newdata = testsample))
+colnames(predicted) = c("prediction_lg")
+
+with_residual = testsample %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual$residual)
+max(with_residual$residual)
+mean(abs(with_residual$residual))
+median(abs(with_residual$residual))
+
+residual_town_years = with_residual %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years
+
+residual_years = with_residual %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_linear = mean(abs(residual)), MSE_linear = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_linear, MSE_linear) %>%
+  arrange(mean_residual_linear) 
+
+residual_years
+
+#install.packages("Metrics")
+library(Metrics)
+
+rmse(with_residual$prediction_actual, with_residual$resale_price_actual)
+
+
+# residual error graph
+
+library(ggplot2)
+plot = ggplot(data = with_residual) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years")
+
+plot
+
+
+##Lasso 
+creating the model
+
+#making dummy variables for the factor variables for training data
+factors_train = trainsample %>%
+  dplyr::select(-c(multistorey_carpark, region)) %>%
+  dplyr::select_if(is.factor) %>% 
+  fastDummies::dummy_cols(remove_first_dummy = TRUE) %>%
+  dplyr::select(year_2011:precinct_pavilion_Y) %>%
+  mutate(id = row_number())
+
+colnames(factors_train) <- gsub(" ", "_", colnames(factors_train))
+
+trainsample1 = trainsample %>%
+  mutate(id = row_number()) %>%
+  left_join(factors_train, by = "id") %>%
+  ungroup()
+
+
+#install.packages("glmnet")
+library(glmnet)
+
+
+x = trainsample1 %>%
+  dplyr::select(floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) 
+
+x = data.matrix(x)
+
+y = trainsample1$resale_price_lg
+
+#perform k-fold cross-validation to find optimal lambda value
+cv_model <- cv.glmnet(x, y, alpha = 0.5, nfolds=10)
+#elastic net, keep correlated variables in groups, alpha = 0.5
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda
+
+
+#produce plot of test MSE by lambda value
+plot(cv_model) 
+
+best_model <- glmnet(x, y, alpha = 0.5, lambda = best_lambda)
+coef(best_model)
+
+#install.packages("hdm")
+library(hdm)
+
+trainsample3 = trainsample1 %>%
+  dplyr::select(resale_price_lg, floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y)
+
+best_model_1 = rlasso(resale_price_lg ~ ., data = trainsample3, penalty = list(X.dependent.lambda = FALSE, homoscedastic = FALSE), post = FALSE)
+
+
+
+# residual error calculation
+
+#making dummy variables for the factor variables for testing data
+factors_test = testsample %>%
+  dplyr::select(-c(multistorey_carpark, region)) %>%
+  dplyr::select_if(is.factor) %>% 
+  fastDummies::dummy_cols(remove_first_dummy = TRUE) %>%
+  dplyr::select(year_2011:precinct_pavilion_Y) %>%
+  mutate(id = row_number()) 
+
+colnames(factors_test) <- gsub(" ", "_", colnames(factors_test))
+
+testsample1 = testsample %>%
+  mutate(id = row_number()) %>%
+  left_join(factors_test, by = "id") %>%
+  ungroup() 
+
+testsample1_x = testsample1 %>%
+  dplyr::select(floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) 
+
+testsample1_x = data.matrix(testsample1_x)
+
+#use lasso regression model to predict response value for best_model
+predicted1 = data.frame(predict(best_model, s = best_lambda, newx = testsample1_x))
+
+predicted1_1 = data.frame(predict(best_model_1, newdata = testsample1_x))
+
+colnames(predicted1) = c("prediction_lg")
+
+with_residual1 = testsample %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted1) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual1$residual)
+max(with_residual1$residual)
+mean(abs(with_residual1$residual))
+median(abs(with_residual1$residual))
+
+
+residual_town_years1 = with_residual1 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years1
+
+residual_years1 = with_residual1 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_lasso = mean(abs(residual)), MSE_lasso = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_lasso, MSE_lasso) %>%
+  arrange(mean_residual_lasso) 
+
+residual_years1
+library(Metrics)
+rmse(with_residual1$prediction_actual, with_residual1$resale_price_actual)
+
+#### for best_model_1
+colnames(predicted1_1) = c("prediction_lg")
+
+with_residual1 = testsample %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted1_1) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual1$residual)
+max(with_residual1$residual)
+mean(abs(with_residual1$residual))
+median(abs(with_residual1$residual))
+
+
+residual_town_years1 = with_residual1 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years1
+
+residual_years1 = with_residual1 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_lasso = mean(abs(residual)), MSE_lasso = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_lasso, MSE_lasso) %>%
+  arrange(mean_residual_lasso) 
+
+residual_years1
+library(Metrics)
+rmse(with_residual1$prediction_actual, with_residual1$resale_price_actual)
+
+
+# residual error graph
+
+library(ggplot2)
+plot = ggplot(data = with_residual1) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years")
+
+plot
+
+
+## Simple decision tree
+Creating the model
+
+#install.packages("rpart")
+#install.packages("rpart.plot")
+library(rpart.plot)
+library(rpart)
+
+#Building model
+dtree=rpart(resale_price_lg~ year_2011+year_2012+ year_2013+ year_2014 +year_2015 +year_2016+ year_2017 +year_2018 + year_2019 +
+              month_2 + month_3 + month_4 + month_5 + month_6 + month_7 + month_8 + month_9 + month_10 + month_11 + month_12 + town_bedok
+            + town_bishan + town_bukit_batok + town_bukit_merah + town_bukit_panjang + town_bukit_timah + town_central_area + town_choa_chu_kang
+            + town_clementi + town_geylang + town_hougang + town_jurong_east + town_jurong_west + `town_kallang/whampoa` + town_marine_parade
+            + town_pasir_ris + town_punggol + town_queenstown + town_sembawang + town_sengkang + town_serangoon + town_tampines + town_toa_payoh
+            + town_woodlands + town_yishun + flat_type_2_room + flat_type_3_room + flat_type_4_room + flat_type_5_room + flat_type_executive
+            + flat_type_multi_generation + floor_area_sqm + remaining_lease + distance_to_cbd + nearest_mrt_lrt_distance, method="anova",data=trainsample1)
+print(dtree)
+
+rpart.plot(dtree, cex=0.5, faclen=-5)
+summary(dtree)
+plotcp(dtree)
+
+#Find the best complexity parameter on CV:
+bestcp=dtree$cptable[which.min(dtree$cptable[,"xerror"]),"CP"]
+
+#Prune the tree according to the chosen CP:
+besttree = prune(dtree,cp=bestcp)
+
+length(unique(besttree$where))
+rpart.plot(besttree, cex=0.5)
+
+
+
+#Finding the residual
+
+##Prediction
+treepred=predict(besttree, testsample1, method="anova", type="vector")
+treepred=as.data.frame(treepred)
+with_residual_tree=cbind(testsample1, treepred)
+
+##Calculating residual
+with_residual_tree_2=with_residual_tree %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(treepred)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+
+##MSE calculation
+residual_town_years_tree= with_residual_tree_2 %>%
+  group_by(year,town) %>%
+  summarise(count=n(), mean_residual_tree=mean(abs(residual)), MSE_tree=(sum(residual)^2)/count, .groups="drop")
+
+residual_years_tree= with_residual_tree_2 %>%
+  group_by(year) %>%
+  summarise(count=n(), mean_residual_tree=mean(abs(residual)), MSE_tree=(sum(residual)^2)/count, .groups="drop") %>%
+  dplyr::select(year, mean_residual_tree, MSE_tree) %>%
+  arrange(mean_residual_tree)  %>%
+  mutate(year=as.numeric(as.character(year)))
+
+rmse(with_residual_tree_2$resale_price_actual, with_residual_tree_2$prediction_actual)
+
+
+##Ridge regression
+#Creating the model
+
+#install.packages("glmnet")
+library(glmnet)
+
+#Preparing training and testing datasets
+x=trainsample1 %>% dplyr::select(-c("region","resale_price","id","resale_price_lg")) %>% dplyr::select(floor_area_sqm, remaining_lease:max_floor_lvl,nearest_bus_distance:mrt_lrt_within_2km, year_2011:precinct_pavilion_Y, distance_to_cbd)
+x=as.matrix(x)
+y=trainsample1$resale_price_lg
+x2=testsample1 %>% dplyr::select(-c("region","resale_price","id","resale_price_lg")) %>% dplyr::select(floor_area_sqm,remaining_lease:max_floor_lvl,nearest_bus_distance:mrt_lrt_within_2km, year_2011:precinct_pavilion_Y, distance_to_cbd)
+x2=as.matrix(x2)
+y2=testsample1$resale_price_lg
+
+
+#Building model, choosing parameters
+ridge_cv=cv.glmnet(x,y, alpha=0)
+bestlambda=ridge_cv$lambda.min
+bestlambda
+plot(ridge_cv)
+best_ridge=glmnet(x,y,alpha=0,lambda=bestlambda)
+coef(best_ridge)
+
+
+# Calculating the residual
+
+#Prediction
+ridge_pred=predict(best_ridge, s=bestlambda, newx=x2, newy=y2 )
+
+predicted = data.frame(ridge_pred)
+colnames(predicted) = c("prediction_lg")
+
+#Calculating Residual
+with_residual = testsample1%>%
+  dplyr::select(resale_price_lg,year, town) %>%
+  cbind(predicted) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual,absres=abs(residual),year_graph = as.Date(year, "%Y"))
+
+min(with_residual$residual)
+max(with_residual$residual)
+mean(with_residual$absres)
+median(with_residual$absres)
+
+#MSE Calculation
+residual_town_years_ridge= with_residual %>%
+  group_by(year,town) %>%
+  summarise(count=n(), mean_residual_ridge=mean(abs(residual)), MSE_ridge=(sum(residual)^2)/count, .groups="drop")
+
+residual_years_ridge= with_residual %>%
+  group_by(year) %>%
+  summarise(count=n(), mean_residual_ridge=mean(abs(residual)), MSE_ridge=(sum(residual)^2)/count, .groups="drop") %>%
+  dplyr::select(year, mean_residual_ridge, MSE_ridge) %>%
+  arrange(mean_residual_ridge) %>%
+  mutate(year=as.numeric(as.character(year)))
+
+rmse(with_residual$resale_price_actual,with_residual$prediction_actual)
+
+##Random forest 
+# creating the model
+
+#install.packages("randomforest")
+library(randomForest) 
+#install.packages("ranger")
+library(ranger)
+
+trainsample2 = trainsample1 %>%
+  dplyr::select(resale_price_lg, floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) %>%
+  dplyr::select(resale_price_lg:year_2023, flat_type_2_room:flat_type_multi_generation, precinct_pavilion_Y)
+
+colnames(trainsample2) <- gsub("/", "_", colnames(trainsample2))
+colnames(trainsample2) <- gsub("-", "_", colnames(trainsample2))
+
+#install.packages("mlr")
+#install.packages("caret")
+#install.packages("mlbench")
+library(mlr)
+library(caret)
+library(randomForest)
+library(mlbench)
+
+#mlr_learners$get("regr.randomForest")
+#lrn("regr.randomForest")
+
+model_rf = ranger(resale_price_lg ~ ., data = trainsample2, importance = 'permutation', scale.permutation.importance = TRUE) 
+
+#model_rf = randomForest(resale_price_lg ~ . , data = trainsample2, importance = TRUE)
+
+#try randomforest again smaller training, try looking at more erecent years, maybe data is old, when did chnages happen, which is the most recent, last 10 years, too old
+###################
+#rtask = makeRegrTask(data = trainsample2, target = "resale_price_lg")
+
+#model_rf_1 = train(makeLearner("regr.randomForest"), rtask)
+
+############# 
+
+# Importance  
+importance(model_rf)
+
+
+# feature importance
+
+library(tidyverse)
+variable = trainsample2 %>%
+  dplyr::select(-resale_price_lg) 
+  
+variable = data.frame(colnames(variable))
+
+table2 = data.frame(ranger::importance(model_rf)) %>%
+  rename(importance = ranger..importance.model_rf.) %>%
+  mutate(sign = ifelse(importance>0, "positive", "negative")) %>%
+  drop_na() %>% #get rid of if we have the flat model
+  cbind(variable) %>%
+  rename(variable = colnames.variable.) %>%
+  mutate(variable = reorder(variable, -importance)) %>%
+  filter(importance != 0)
+
+#install.packages("forcats")
+#library(forcats)
+
+p2 = ggplot(data = table2) +
+  geom_col(aes(x = variable, y = importance), fill = "0099FF") +
+  coord_flip() + 
+  labs(title = "Predictor Importance in Random Forest")
+  
+p2
+
+
+
+# residual error calculation
+
+testsample2 = testsample1 %>%
+  dplyr::select(resale_price_lg, floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) 
+
+colnames(testsample2) <- gsub("/", "_", colnames(testsample2))
+colnames(testsample2) <- gsub("-", "_", colnames(testsample2))
+
+predicted = data.frame(predict(model_rf, data = testsample2))
+colnames(predicted) = c("prediction_lg")
+
+with_residual2 = testsample1 %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual2$residual)
+max(with_residual2$residual)
+mean(abs(with_residual2$residual))
+median(abs(with_residual2$residual))
+
+
+residual_town_years2 = with_residual2 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years2
+
+residual_years2 = with_residual2 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_rf = mean(abs(residual)), MSE_rf = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_rf, MSE_rf) %>%
+  arrange(mean_residual_rf) 
+
+residual_years2
+
+rmse(with_residual2$prediction_actual, with_residual2$resale_price_actual)
+
+
+# residual error graph
+
+library(ggplot2)
+plot = ggplot(data = with_residual2) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years")
+
+plot
+
+
+##Bagging 
+# running the model
+
+library(randomForest)
+library(MASS)
+#install.packages("e1071")
+#install.packages("caret")
+#install.packages("rpart")
+#install.packages("ipred")
+library(e1071)       #for calculating variable importance
+library(caret)       #for general model fitting
+library(rpart)       #for fitting decision trees
+library(ipred)       #for fitting bagged decision trees
+
+trainsample4 = trainsample1 %>%
+  dplyr::select(resale_price_lg, floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y)
+
+colnames(trainsample4) <- gsub("/", "_", colnames(trainsample4))
+colnames(trainsample4) <- gsub("-", "_", colnames(trainsample4))
+
+#Recall bagging is achieved with mtry=P, since here we have 120 predictors, set mtry=120:
+model_bagging_1 = randomForest(resale_price_lg~., data=trainsample4, ntree=5000, maxnodes=10, mtry=120)
+#we found that model_bagging_1 has a high rsme so we changed to another package 
+
+model_bagging = bagging(formula = resale_price_lg ~ ., data = trainsample4, nbagg = 150, coob = TRUE, control = rpart.control(minsplit = 2, cp = 0))
+  
+importance(model_bagging_1)
+
+#saveRDS(model_bagging, file = "../data/model_bagging.rds")
+
+set.seed(1)
+model_bagging_2 = bagging(formula = resale_price_lg ~ ., data = trainsample4, nbagg = 100, coob = TRUE, control = rpart.control(minsplit = 2, cp = 0))
+
+
+# residual for model_bagging
+
+testsample4 = testsample1 %>%
+  dplyr::select(floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) 
+
+colnames(testsample4) <- gsub("/", "_", colnames(testsample4))
+colnames(testsample4) <- gsub("-", "_", colnames(testsample4))
+
+predicted = data.frame(predict(model_bagging, newdata = testsample4))
+colnames(predicted) = c("prediction_lg")
+
+with_residual4 = testsample1 %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual4$residual)
+max(with_residual4$residual)
+mean(abs(with_residual4$residual))
+median(abs(with_residual4$residual))
+
+
+residual_town_years4 = with_residual4 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years4 %>%
+  filter(year == 2023) %>%
+  tail(n=10)
+
+residual_years4 = with_residual4 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_bagging = mean(abs(residual)), MSE_bagging = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_bagging, MSE_bagging) %>%
+  arrange(mean_residual_bagging) 
+
+residual_years4
+library(Metrics)
+rmse(with_residual4$prediction_actual, with_residual4$resale_price_actual)
+
+
+# residual for model_bagging_2
+
+predicted5 = data.frame(predict(model_bagging_2, newdata = testsample4))
+colnames(predicted5) = c("prediction_lg")
+
+with_residual5 = testsample1 %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted5) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual5$residual)
+max(with_residual5$residual)
+mean(abs(with_residual5$residual))
+median(abs(with_residual5$residual))
+
+
+residual_town_years5 = with_residual5 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years5 %>%
+  filter(year == 2023) %>%
+  tail(n=10)
+
+residual_years5 = with_residual5 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_bagging = mean(abs(residual)), MSE_bagging = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_bagging, MSE_bagging) %>%
+  arrange(mean_residual_bagging) 
+
+#residual_years5
+
+rmse(with_residual5$prediction_actual, with_residual5$resale_price_actual)
+
+# residual error graph, arranged from lowest to highest mean residual in 2023
+
+library(ggplot2)
+library(tidyverse)
+
+with_residual4_1 = with_residual4 %>%
+  mutate(town = fct_relevel(town, c("sembawang", "bukit batok", "yishun", "woodlands", "punggol", "choa chu kang", "jurong west", "ang mo kio", "jurong east", "bedok", "sengkang", "bukit panjang", "clementi", "hougang", "tampines", "marine parade","geylang", "queenstown", "pasir ris", "toa payoh", "bukit merah", "kallang/whampoa", "serangoon", "central area", "bishan", "bukit timah")))
+
+plot2 = ggplot(data = with_residual4_1) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years") +
+  #scale_x_continuous(breaks=seq(from = 10, to = 23, by = 2))
+  labs(y = "Residual", x = "Year", title = "Trend of residuals across towns between 2010 - 2023", subtitle = "Positive residuals indicate actual prices > predicted <=> Negative residuals indicate actual prices < predicted.", caption = "Towns are arranged from lowest to highest mean residuals in 2023, so from lowest to highest land value.")
+
+plot2
+
+# residual error graph for towns with mean residuals > 60K in 2023
+
+library(ggplot2)
+library(tidyverse)
+
+with_residual4_1 = with_residual4 %>%
+  filter(town %in% c("geylang", "queenstown", "pasir ris", "toa payoh", "bukit merah", "kallang/whampoa", "serangoon", "central area", "bishan", "bukit timah")) %>%
+  mutate(town = fct_relevel(town, c("geylang", "queenstown", "pasir ris", "toa payoh", "bukit merah", "kallang/whampoa", "serangoon", "central area", "bishan", "bukit timah")))
+
+plot3 = ggplot(data = with_residual4_1) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years") +
+  #scale_x_continuous(breaks=seq(from = 10, to = 23, by = 2))
+  labs(y = "Residual", x = "Year", title = "Trend for top 10 towns with highest residuals from 2010 - 2023", subtitle = "Positive residuals indicate actual prices > predicted <=> Negative residuals indicate actual prices < predicted.")
+
+plot3
+
+
+# feature importance for worse model_bagging_1 since model_bagging unable to load for importance, too high data needed
+
+library(tidyverse)
+variable = trainsample4 %>%
+  dplyr::select(-resale_price_lg) 
+  
+variable = data.frame(colnames(variable))
+
+table4 = data.frame(importance(model_bagging_1)) %>%
+  rename(importance = IncNodePurity) %>%
+  mutate(sign = ifelse(importance>0, "positive", "negative")) %>%
+  drop_na() %>% #get rid of if we have the flat model
+  cbind(variable) %>%
+  rename(variable = colnames.variable.) %>%
+  mutate(variable = reorder(variable, -importance)) %>%
+  filter(importance != 0)
+
+#install.packages("forcats")
+#library(forcats)
+
+p4 = ggplot(data = table4) +
+  geom_col(aes(x = variable, y = importance), fill = "0068FF") +
+  coord_flip() + 
+  labs(title = "Predictor Importance in Bagging model")
+  
+p4
+
+summary(model_bagging)
+
+#checking if we can reduce the size of the file of the model
+#model_bagging_5 = model_bagging[c(1,2,3)]
+
+cleanModel = function(mod) {
+  # just in case we forgot to set
+  # y=FALSE and model=FALSE
+  mod$y = c()
+  mod$call = c()
+
+  mod$OOB = c()
+  mod$X = c()
+  mod$err = c()
+  mod
+}
+
+model_bagging_5 = cleanModel(model_bagging)
+
+#running the model for the model_bagging_9 
+library(randomForest)
+library(MASS)
+#install.packages("e1071")
+#install.packages("caret")
+#install.packages("rpart")
+#install.packages("ipred")
+library(e1071)       #for calculating variable importance
+library(caret)       #for general model fitting
+library(rpart)       #for fitting decision trees
+library(ipred)       #for fitting bagged decision trees
+
+trainsample4 = trainsample1 %>%
+  dplyr::select(resale_price_lg, floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y)
+
+colnames(trainsample4) <- gsub("/", "_", colnames(trainsample4))
+colnames(trainsample4) <- gsub("-", "_", colnames(trainsample4))
+
+#Recall bagging is achieved with mtry=P, since here we have 120 predictors, set mtry=120:
+#model_bagging_1 = randomForest(resale_price_lg~., data=trainsample4, ntree=5000, maxnodes=10, mtry=120)
+#we found that model_bagging_1 has a high rsme so we changed to another package 
+
+model_bagging_9 = bagging(formula = resale_price_lg ~ ., data = trainsample4, nbagg = 75, coob = TRUE, control = rpart.control(minsplit = 2, cp = 0))
+  
+#importance(model_bagging_1)
+
+#saveRDS(model_bagging, file = "../data/model_bagging_9.rds")  
+
+ # residual for model_bagging_9
+  
+testsample4 = testsample1 %>%
+  dplyr::select(floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) 
+
+colnames(testsample4) <- gsub("/", "_", colnames(testsample4))
+colnames(testsample4) <- gsub("-", "_", colnames(testsample4))
+
+predicted = data.frame(predict(model_bagging_9, newdata = testsample4))
+colnames(predicted) = c("prediction_lg")
+
+with_residual4 = testsample1 %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual4$residual)
+max(with_residual4$residual)
+mean(abs(with_residual4$residual))
+median(abs(with_residual4$residual))
+
+
+residual_town_years4 = with_residual4 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years4 %>%
+  filter(year == 2023) %>%
+  tail(n=10)
+
+residual_years4 = with_residual4 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_bagging = mean(abs(residual)), MSE_bagging = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_bagging, MSE_bagging) %>%
+  arrange(mean_residual_bagging) 
+
+residual_years4
+library(Metrics)
+rmse(with_residual4$prediction_actual, with_residual4$resale_price_actual)
+
+#note: Unfortunately, bagging() does not provide the RMSE by tree so to find the nbagg parameter, we had to individually try different models and see when the RMSE stops decreasing with higher nbaggs.
+
+#residual error plot
+library(ggplot2)
+library(tidyverse)
+
+with_residual4_1 = with_residual4 %>%
+  mutate(town = fct_relevel(town, c("sembawang", "bukit batok", "yishun", "woodlands", "punggol", "choa chu kang", "jurong west", "ang mo kio", "jurong east", "bedok", "sengkang", "bukit panjang", "clementi", "hougang", "tampines", "marine parade","geylang", "queenstown", "pasir ris", "toa payoh", "bukit merah", "kallang/whampoa", "serangoon", "central area", "bishan", "bukit timah")))
+
+plot2 = ggplot(data = with_residual4_1) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years") +
+  #scale_x_continuous(breaks=seq(from = 10, to = 23, by = 2))
+  labs(y = "Residual", x = "Year", title = "Trend of residuals across towns between 2010 - 2023", subtitle = "Positive residuals indicate actual prices > predicted <=> Negative residuals indicate actual prices < predicted.", caption = "Towns are arranged from lowest to highest mean residuals in 2023, so from lowest to highest land value.")
+
+plot2
