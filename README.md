@@ -17,7 +17,15 @@ https://drive.google.com/drive/folders/1rVIPNjGgv1XRqYiTPv0tMLv75ieVhhzr?usp=sha
 The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, leaflet, RColorBrewer, stringr, DT, bslib, shinythemes, fastDummies, ipred.
 
 * Run the application code file in your RStudio.
-  
+
+## Repository Structure
+* /backend → Files used for data cleaning and modelling
+  * best-model → File for the final selected model (bagging)
+  * data-manipulation → File on how data was tidied and used
+  * model-building-selection → File on training and testing of other models
+* /data → raw datasets used before data cleaning manipulation
+* /frontend → File for building our Rshiny application
+* README.md → Contains instructions on downloading and running our application.
 
 ## Data Sources:
 1. Resale HDB data: data.gov.sg <br>
