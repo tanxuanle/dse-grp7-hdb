@@ -1,0 +1,1041 @@
+resale_1990 = read.csv("../data/ResaleFlatPricesBasedonApprovalDate19901999.csv")
+resale_2000 = read.csv("../data/ResaleFlatPricesBasedonApprovalDate2000Feb2012.csv")
+resale_2012 = read.csv("../data/ResaleFlatPricesBasedonRegistrationDateFromMar2012toDec2014.csv")
+resale_2015 = read.csv("../data/ResaleFlatPricesBasedonRegistrationDateFromJan2015toDec2016.csv")
+resale_2017 = read.csv("../data/ResaleflatpricesbasedonregistrationdatefromJan2017onwards.csv")
+
+property_data = read.csv("../data/HDBPropertyInformation.csv")
+
+library(tidyverse)
+
+resale_1990_1 = resale_1990 %>%
+  mutate_at(vars(town,flat_type,street_name, flat_model), tolower) %>%
+  separate(month, into = c("year", "month"), sep = "-") %>%
+  mutate(year = as.numeric(year), remaining_lease = 99 - (year-lease_commence_date))
+  
+resale_price_2015 <- subset(resale_2015, select = -remaining_lease)
+resale_price_2017 <- subset(resale_2017, select = -remaining_lease)
+
+resale_price <- rbind(resale_1990, resale_2000, resale_2012, resale_price_2015, resale_price_2017) %>%
+  mutate_at(vars(town,flat_type,street_name, flat_model), tolower) %>%
+  separate(month, into = c("year", "month"), sep = "-") %>%
+  mutate(year = as.numeric(year), remaining_lease = 99 - (year-lease_commence_date))
+
+property_info = property_data %>%
+  mutate_at(vars(street), tolower)
+
+merged_data <- left_join(resale_price, property_info, by = c("street_name" = "street", "block" = "blk_no"))%>%
+  mutate(flat_type = str_replace(flat_type, "multi-generation", "multi generation"))
+
+
+regions <- read.csv('../data/sgregions.csv')
+
+regions = regions %>%
+  mutate_at(vars(Town, Region), tolower)
+
+merged_data <- merged_data %>%
+  left_join(regions, by = c("town" = "Town"))
+
+library(readxl)
+cpi_raw = cpi_raw <- read_excel("../data/cpijan24.xlsx",  sheet = "T6")
+  
+  
+## Account for inflation in resale prices
+cpi_cleaned <- cpi_raw %>%
+  filter(`Subject: Prices and Price Indices` %in% c("Housing & Utilities", "Variables")) %>%
+  na.omit()
+
+colnames(cpi_cleaned) <- cpi_cleaned[1, ]
+cpi_cleaned <- cpi_cleaned[-1, ]
+cpi_cleaned <- cpi_cleaned[, -1]
+
+cpi <- cpi_cleaned %>%
+  pivot_longer(cols = everything(),
+               names_to = "date",
+               values_to = "price_indices") %>%
+  separate(date, into = c("year", "month"), sep = " ") %>%
+  mutate(year = as.numeric(year),
+         month = match(month, month.abb), price_indices = as.numeric(price_indices))
+
+merged_data <- merged_data %>%
+  mutate(month = as.numeric(month))
+
+# Merge datasets on date
+prices <- left_join(merged_data, cpi, by = c("year", "month"))
+
+# Calculate 'real_price'
+prices <- prices %>%
+  filter(!is.na(price_indices)) %>%  # Remove rows with missing values in resale_price or price_indices
+  mutate(real_price = (resale_price / price_indices) * 100) %>% 
+  mutate(address = paste(block, street_name, sep = " "))
+
+#We find the coordinates of the unique addresses in our dataset and build a function that will query the coordinates from the onemap API.
+library(httr) #help send requests to the API server 
+library(jsonlite)
+
+prices <- prices %>% mutate(address = paste(block, street_name, sep = " "))
+
+unique_addresses <- unique(prices$address)
+
+get_coordinates <- function(address) {
+  # Set the URL
+  url <- "https://www.onemap.gov.sg/api/common/elastic/search"
+
+  # Set query parameters
+  query_params <- list(
+    searchVal = address,
+    returnGeom = "Y",
+    getAddrDetails = "Y",
+    pageNum = 1
+  )
+
+  # Make the GET request
+  response <- GET(url, query = query_params)
+
+  # Extract latitude and longitude using regex
+  response_text <- content(response, "text")
+  latitude <- gsub('.*LATITUDE\": \"([^\"]+)\".*', '\\1', response_text)
+  longitude <- gsub('.*LONGITUDE\": \"([^\"]+)\".*', '\\1', response_text)
+
+  # Return latitude and longitude
+  return(c(latitude = latitude, longitude = longitude))
+}
+
+# Initialize an empty list to store coordinates
+all_coordinates <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+# Iterate over each address in the address list
+for (address in unique_addresses) {
+  # Get coordinates for the address
+  coordinates <- get_coordinates(address)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_addresses)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates <- c(all_coordinates, list(coordinates))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_df <- data.frame(
+  address = unique_addresses,
+  latitude = sapply(all_coordinates, "[[", "latitude"),
+  longitude = sapply(all_coordinates, "[[", "longitude")
+)
+
+#PDF scraping for hawker centre locations
+library(pdftools)
+hawker=pdf_text("../data/list-of-hcs_28-sep-2023.pdf") # from nea website (google list of hawker centres in singapore)
+pg1=hawker[1]
+pg1s=str_split(pg1, "\n", simplify = TRUE) %>%
+  str_trim()
+class(pg1s)
+head(pg1s,10)
+pg1s[3] %>%
+  # Remove anything following the comma
+  str_replace_all(",\\s.", "") %>%
+  # Split string when there are two or more spaces
+  str_split("\\s{2,}", simplify = TRUE) -> names1
+names1
+
+colnames <- c(names1,"Manager") %>%
+  # Convert to lower case
+  str_to_lower() %>%
+  # Replace white space with underscore "_"
+  str_replace_all("\\s", "_")
+colnames
+
+page1=pg1s[5:67] %>%
+  str_split("\\s{2,}", simplify = TRUE) %>%
+  data.frame() %>%
+  setNames(colnames) #%>%
+
+
+pg2=hawker[2]
+pg2s=str_split(pg2, "\n", simplify = TRUE) %>%
+  str_trim()
+class(pg2s)
+head(pg2s,10)
+
+
+page2=pg2s[5:67] %>%
+  str_split("\\s{2,}", simplify = TRUE) %>%
+  data.frame() %>%
+  setNames(colnames) %>%
+  filter(address!="" & address!="Address")
+
+hawkerdata=rbind(page1,page2) %>%
+  rename(original_address=address) %>%
+  mutate(address=original_address) %>%
+  mutate(address =address %>%
+  str_replace(", S\\([0-9]+\\)$","") %>%
+  str_replace(", S\\s\\([0-9]+\\)$","") %>%
+  str_replace(", S\\([0-9]{6}/[0-9]{6}\\)$","") %>%
+  str_replace(",",""))
+
+hawkerdata2=hawkerdata %>%
+  mutate(address=address %>% str_replace("\\w+/","") %>%
+           str_replace(",\\s#[0-9]+-[0-9]+","")) %>%
+  mutate(address= case_when(address =="Blks B Boon Lay Place" ~ "Blks 221B Boon Lay Place",
+                            address =="Blks B Havelock Road" ~ "Blks 22B Havelock Road",
+                            address =="86 Market Street, CapitaSpring Building" ~ "86 Market Street",
+                            address =="676 Woodlands Drive 71, #02-44" ~ "676 Woodlands Drive 71",
+                            address =="National Development Building Annex B, Telok Ayer Street" ~ "7 Maxwell Road",
+                            .default=address))
+
+
+ha <- hawkerdata %>%
+  filter(str_detect(address,"^Blks")) %>%
+  mutate(address=str_replace(address,"/\\w+",""))
+
+
+hawkerdf=rbind(hawkerdata2, ha) %>%
+  mutate(address= address %>% str_replace("^Blks?\\s",""))
+
+unique_hawk=unique(hawkerdf$address)
+
+# Initialize an empty list to store coordinates
+all_coordinates_hawk <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+for (address in unique_hawk) {
+  # Get coordinates for the address
+  coordinates_hawk <- get_coordinates(address)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates_hawk)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_hawk)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates_hawk <- c(all_coordinates_hawk, list(coordinates_hawk))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_df_hawk <- data.frame(
+  address = unique_hawk,
+  latitude = sapply(all_coordinates_hawk, "[[", "latitude"),
+  longitude = sapply(all_coordinates_hawk, "[[", "longitude")
+)
+
+joined_df_hawk <- left_join(hawkerdf, coordinates_df_hawk, by = "address")
+
+
+
+library(stringr)
+
+coordinates_df_withoutNA = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric)
+
+coordinates_df_with_hawker = data.frame(place = character(), distance_to_nearest_hawker = double(), hawkercentre = character(), hawkers_within_2km=numeric())
+
+#install.packages("geosphere")
+library(geosphere)
+
+for(i in 1:nrow(coordinates_df_withoutNA)){
+  check = c()
+  within_2km = 0
+  for(z in 1:nrow(joined_df_hawk)){
+    long1 = as.numeric(coordinates_df_withoutNA[i,3])
+    lat1 = as.numeric(coordinates_df_withoutNA[i,2])
+    long2 = as.numeric(joined_df_hawk[z,7])
+    lat2 = as.numeric(joined_df_hawk[z,6])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+
+  }
+  coordinates_df_with_hawker[i,1] = coordinates_df_withoutNA[i,1]
+  coordinates_df_with_hawker[i,2] = min(check)
+  coordinates_df_with_hawker[i,3] = joined_df_hawk[which.min(check), 2]
+  coordinates_df_with_hawker[i,4] = within_2km
+
+}
+coordinates_df_with_hawker = coordinates_df_with_hawker %>%
+  rename(nearest_hawker=hawkercentre)
+  
+#Getting the locations of primary schools 
+
+sch=read.csv("../data/Generalinformationofschools.csv")
+sch = sch %>%
+  filter(mainlevel_code=="PRIMARY") %>%
+  select(school_name,address) %>%
+  mutate(address=tolower(address))
+
+sch$address=str_squish(sch$address)
+unique_sch=unique(sch$address)
+
+# Initialize an empty list to store coordinates
+all_coordinates_sch <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+for (address in unique_sch) {
+  # Get coordinates for the address
+  coordinates_sch <- get_coordinates(address)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates_sch)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_sch)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates_sch <- c(all_coordinates_sch, list(coordinates_sch))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_df_sch <- data.frame(
+  address = unique_sch,
+  latitude = sapply(all_coordinates_sch, "[[", "latitude"),
+  longitude = sapply(all_coordinates_sch, "[[", "longitude")
+)
+
+joined_df_sch <- left_join(sch, coordinates_df_sch, by = "address")
+
+joined_df_sch =joined_df_sch %>%
+  mutate(latitude= case_when(school_name =="HOUGANG PRIMARY SCHOOL" ~ "1.3783458389807197",
+                                                           school_name =="JING SHAN PRIMARY SCHOOL" ~ "1.3724870849874014",
+                                                           school_name =="WEST GROVE PRIMARY SCHOOL" ~ "1.344803668030184",
+                                                           school_name =="WHITE SANDS PRIMARY SCHOOL" ~ "1.3657067175511348",
+                                                          .default=latitude)) %>%
+  mutate(longitude= case_when(school_name =="HOUGANG PRIMARY SCHOOL" ~ "103.88124751058996",
+                             school_name =="JING SHAN PRIMARY SCHOOL" ~ "103.85179862593101",
+                             school_name =="WEST GROVE PRIMARY SCHOOL" ~ "103.69894132223683",
+                             school_name =="WHITE SANDS PRIMARY SCHOOL" ~ "103.96106066641337",
+                             .default=longitude))
+
+
+library(stringr)
+
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_df_with_sch = data.frame(place = character(), distance_to_nearest_school = double(), school = character(), schools_within_2km = numeric())
+
+#install.packages("geosphere")
+library(geosphere)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+  for(z in 1:nrow(joined_df_sch)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(joined_df_sch[z,4])
+    lat2 = as.numeric(joined_df_sch[z,3])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_sch[i,1] = coordinates[i,1]
+  coordinates_df_with_sch[i,2] = min(check)
+  coordinates_df_with_sch[i,3] = joined_df_sch[which.min(check), 1]
+  coordinates_df_with_sch[i,4] = within_2km
+}
+
+# Getting the locations of supermarkets
+supermarkets=read.csv("../data/ListofSupermarketLicences.csv") %>% rename(supermarket=licensee_name)
+skt= supermarkets %>% group_by(postal_code) %>% summarise(n()) %>% rename(count=`n()`)
+# skt2=left_join(supermarkets, skt, by="postal_code") %>% mutate(names=supermarket )
+# skt3=for (r in 1:nrow(skt2)){
+#   if (skt2$count[r]>1){
+#     for(i in 1:skt2$count[r]){
+#       skt2$name[r]=paste(skt2$name[r],)
+#     }
+#   }
+# }
+unique_supermarket=skt %>% distinct(postal_code, .keep_all=TRUE) %>% select(postal_code, count)
+# Initialize an empty list to store coordinates
+all_coordinates_supermarket <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+for (address in unique_supermarket$postal_code) {
+  # Get coordinates for the address
+  coordinates_supermarket <- get_coordinates(address)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates_malls)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_supermarket$postal_code)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates_supermarket <- c(all_coordinates_supermarket, list(coordinates_supermarket))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_df_supermarket <- data.frame(
+  num_supermarket=unique_supermarket$count,
+  supermarket_postal = unique_supermarket$postal_code,
+  latitude = sapply(all_coordinates_supermarket, "[[", "latitude"),
+  longitude = sapply(all_coordinates_supermarket, "[[", "longitude")
+)
+
+#joined_df_malls <- left_join(sch, coordinates_df_sch, by = "address")
+coordinates_df_supermarket_withoutNA= coordinates_df_supermarket %>% filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric)
+
+
+library(stringr)
+
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_df_with_supermarkets = data.frame(place = character(), distance_to_nearest_supermarket = double(), supermarket_postal = character(), supermarkets_within_2km=numeric())
+
+#install.packages("geosphere")
+#library(geosphere)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+
+  for(z in 1:nrow(coordinates_df_supermarket_withoutNA)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(coordinates_df_supermarket_withoutNA[z,4])
+    lat2 = as.numeric(coordinates_df_supermarket_withoutNA[z,3])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + coordinates_df_supermarket_withoutNA[z,1]
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_supermarkets[i,1] = coordinates[i,1]
+  coordinates_df_with_supermarkets[i,2] = min(check)
+  coordinates_df_with_supermarkets[i,3] = coordinates_df_supermarket_withoutNA[which.min(check), 2]
+  coordinates_df_with_supermarkets[i,4] = within_2km
+}
+
+coordinates_df_with_supermarkets =coordinates_df_with_supermarkets %>% select(-c("supermarket_postal"))
+
+# Web scraping for hospitals/clinics
+url_hosp="https://en.wikipedia.org/wiki/List_of_hospitals_in_Singapore"
+
+tables <- read_html(url_hosp) %>% html_elements("table")
+acute_hosp=tables[[1]] %>% html_table() %>% select(Name)
+comm_hosp=tables[[2]] %>% html_table() %>% select(Name)
+IMH=tables[[3]] %>% html_table() %>% select(Name)
+hosps=rbind(acute_hosp,comm_hosp,IMH)
+
+url_poly="https://www.sgdi.gov.sg/other-organisations/polyclinics"
+poly=read_html(url_poly) %>% html_elements(".directory-list li") %>% html_text2()
+poly= poly %>% as.data.frame() %>%
+  setNames('Name')
+morepolys=data.frame(Name=c("SINGHEALTH POLYCLINICS - EUNOS","SINGHEALTH POLYCLINICS - PUNGGOL","SINGHEALTH POLYCLINICS - TAMPINES NORTH","BUKIT BATOK POLYCLINIC","BUKIT PANJANG POLYCLINIC","CHOA CHU KANG POLYCLINIC","CLEMENTI POLYCLINIC","JURONG POLYCLINIC","PIONEER POLYCLINIC","QUEENSTOWN POLYCLINIC"))
+poly=rbind(poly, morepolys) %>%
+  mutate(Name=str_trim(Name)) %>%
+  filter(!row_number() %in% c(1,10))
+
+
+polyhosp=rbind(poly,hosps) %>% rename(Institution=Name) %>%
+  mutate(Institution= case_when(Institution =="NATIONAL HEALTHCARE GROUP POLYCLINICS - KALLANG" ~ "KALLANG POLYCLINIC",
+                             Institution =="NATIONAL HEALTHCARE GROUP POLYCLINICS - SEMBAWANG" ~ "21 Canberra Link",
+                             Institution =="SINGHEALTH POLYCLINICS - EUNOS" ~ "EUNOS POLYCLINIC",
+                             .default=Institution))
+
+unique_health=unique(polyhosp$Institution)
+# Initialize an empty list to store coordinates
+all_coordinates_health <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+for (address in unique_health) {
+  # Get coordinates for the address
+  coordinates_health <- get_coordinates(address)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates_health)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_health)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates_health <- c(all_coordinates_health, list(coordinates_health))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_df_health <- data.frame(
+  health = unique_health,
+  latitude = sapply(all_coordinates_health, "[[", "latitude"),
+  longitude = sapply(all_coordinates_health, "[[", "longitude")
+)
+
+coordinates_df_health= coordinates_df_health %>% mutate(health= case_when(health =="KALLANG POLYCLINIC"~"NATIONAL HEALTHCARE GROUP POLYCLINICS - KALLANG",
+                                                                                health =="21 Canberra Link"~"NATIONAL HEALTHCARE GROUP POLYCLINICS - SEMBAWANG",
+                                                                                health =="EUNOS POLYCLINIC"~"SINGHEALTH POLYCLINICS - EUNOS",
+                                                                                .default=health))
+#joined_df_malls <- left_join(sch, coordinates_df_sch, by = "address")
+
+
+
+library(stringr)
+
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+
+coordinates_df_with_health = data.frame(place = character(), distance_to_nearest_healthcare = double(), healthcare = character(), healthcare_within_2km=numeric())
+
+
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+
+  for(z in 1:nrow(coordinates_df_health)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(coordinates_df_health[z,3])
+    lat2 = as.numeric(coordinates_df_health[z,2])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_health[i,1] = coordinates[i,1]
+  coordinates_df_with_health[i,2] = min(check)
+  coordinates_df_with_health[i,3] = coordinates_df_health[which.min(check), 1]
+  coordinates_df_with_health[i,4] = within_2km
+}
+
+# web scraping for buses
+library(rvest)
+url = "https://en.wikipedia.org/wiki/List_of_bus_routes_in_Singapore"
+
+
+tables <- read_html(url) %>% 
+  html_elements("table")
+# Number of tables available
+length(tables)
+
+
+######################
+bus = c(bus_stations = character())
+for (i in 2:10){
+  name = paste0("no", i)
+  name = tables[[i]] %>%
+    html_table() %>%
+    select(Origin, Destination) 
+  
+  first = name %>%
+    select(Origin) %>%
+    rename(bus_stations = Origin)
+  
+  second = name %>%
+    select(Destination) %>%
+    rename(bus_stations = Destination) 
+  
+  name = rbind(first, second)
+  bus = rbind(bus, name) %>%
+    distinct()
+}
+
+bus1 = bus %>%
+  mutate(bus_stations = case_when(bus_stations == "Boon Lay Bus InterchangeLien Ying Chow Drive" ~ "Boon Lay Bus Interchange", bus_stations == "Ang Mo Kio Avenue 10Ang Mo Kio Avenue 9" ~ "Ang Mo Kio Avenue 10", bus_stations == "Choa Chu Kang Bus InterchangeChoa Chu Kang MRT"~"Choa Chu Kang Bus Interchange", bus_stations == "Marina BoulevardChoa Chu Kang Avenue 5" ~ "Choa Chu Kang Avenue 5", bus_stations == "Perling Mall or Gelang Patah" ~ "Perling Mall", bus_stations == "	
+Yishun Street 41Anson Road" ~ "Yishun Street 41", bus_stations == "Woodlands Street 82Anson Road" ~ "Woodlands Street 82", bus_stations == "Shenton WayYishun Ring Road" ~ "Shenton Way",.default = bus_stations))
+	
+
+
+add = c("Lien Ying Chow Drive", "Ang Mo Kio Avenue 9", "Choa Chu Kang MRT")
+
+bus2 = rbind(bus1,add) %>%
+  mutate(bus_stations = gsub("/.*", "", bus_stations), bus_stations = gsub("\\[.*?\\]", "", bus_stations))
+
+process_observation <- function(row) {
+  # Check if there are numbers inside parentheses
+  if (grepl("\\(\\d+\\)", row)) {
+    # Extract numbers inside parentheses
+    numbers <- gsub(".*\\((\\d+)\\).*", "\\1", row)
+    # Remove parentheses and numbers from the observation
+    observation <- gsub("\\s(\\d+\\)", "", row)
+    # Place numbers to the front of the observation
+    modified_observation <- paste(numbers, observation)
+  } 
+  else {
+    # Remove parentheses and everything inside them
+    modified_observation <- gsub("\\(.*?\\)", "", row)
+  }
+  return(modified_observation)
+}
+
+bus2$bus_station_names = apply(bus2, 1, process_observation) 
+
+#################################
+unique_addresses = unique(bus2$bus_station_names)
+
+# Initialize an empty list to store coordinates
+all_coordinates <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+# Iterate over each bus_station in the bus_station list
+for (bus_station_names in unique_addresses) {
+  # Get coordinates for the bus_station
+  coordinates <- get_coordinates(bus_station_names)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_addresses)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates <- c(all_coordinates, list(coordinates))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_bus <- data.frame(
+  bus_station_names = unique_addresses,
+  latitude = sapply(all_coordinates, "[[", "latitude"),
+  longitude = sapply(all_coordinates, "[[", "longitude")
+)
+
+
+############
+
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_bus_withoutNA = coordinates_bus %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric)
+
+
+
+coordinates_df_with_bus = data.frame(place = character(), nearest_bus_distance = double(), bus_station_name = character(), bus_within_2km = numeric())
+
+#install.packages("geosphere")
+library(geosphere)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+  for(z in 1:nrow(coordinates_bus_withoutNA)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(coordinates_bus_withoutNA[z,3])
+    lat2 = as.numeric(coordinates_bus_withoutNA[z,2])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_bus[i,1] = coordinates[i,1]
+  coordinates_df_with_bus[i,2] = min(check)
+  coordinates_df_with_bus[i,3] = coordinates_bus_withoutNA[which.min(check), 1]
+  coordinates_df_with_bus[i,4] = within_2km
+}
+
+# web scraping for lrt
+library(rvest)
+url = "https://mrtmapsingapore.com/lrt-stations/"
+
+tables <- read_html(url) %>% 
+  html_elements("table")
+
+lrt = tables[[1]] %>% 
+  html_table() %>%
+  select(Station)
+
+for (i in 1:nrow(lrt)){
+  lrt[i,1] = paste(lrt[i,1], "LRT Station")
+}
+ 
+#######################
+unique_addresses = unique(lrt$Station)
+
+# Initialize an empty list to store coordinates
+all_coordinates <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+# Iterate over each bus_station in the bus_station list
+for (Station in unique_addresses) {
+  # Get coordinates for the bus_station
+  coordinates <- get_coordinates(Station)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_addresses)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates <- c(all_coordinates, list(coordinates))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_lrt <- data.frame(
+  lrt_station_name = unique_addresses,
+  latitude = sapply(all_coordinates, "[[", "latitude"),
+  longitude = sapply(all_coordinates, "[[", "longitude")
+)
+
+coordinates_lrt[14,2] = 1.380289
+coordinates_lrt[14,3] = 103.760094
+  
+coordinates_lrt[39,2] = 1.41687
+coordinates_lrt[39,3] = 103.90669
+############### got coordinates_lrt
+
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_df_with_lrt = data.frame(place = character(), nearest_lrt_distance = double(), lrt_station_name = character(), lrt_within_2km = numeric())
+
+#install.packages("geosphere")
+library(geosphere)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+  for(z in 1:nrow(coordinates_lrt)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(coordinates_lrt[z,3])
+    lat2 = as.numeric(coordinates_lrt[z,2])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_lrt[i,1] = coordinates[i,1]
+  coordinates_df_with_lrt[i,2] = min(check)
+  coordinates_df_with_lrt[i,3] = coordinates_lrt[which.min(check), 1]
+  coordinates_df_with_lrt[i,4] = within_2km
+}
+########### got coordinates_df_with_lrt to merge with final, note that lrt only in punggol, sengkang, bukit panjang so when analysing probably only matters for these 3 regions
+
+#web scraping for mrt 
+ library(rvest)
+url = "https://mrtmapsingapore.com/mrt-stations-singapore/"
+
+tables <- read_html(url) %>% 
+  html_elements("table")
+
+mrt = tables[[1]] %>% 
+  html_table() 
+
+names(mrt) = str_replace_all(names(mrt), c(" " = "_" ))
+
+mrt = mrt %>%
+  select(Station_Name) %>%
+  rename(Station = Station_Name)
+
+for (i in 1:nrow(mrt)){
+  mrt[i,1] = paste(mrt[i,1], "MRT Station")
+}
+ 
+#######################
+unique_addresses = unique(mrt$Station)
+
+# Initialize an empty list to store coordinates
+all_coordinates <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+# Iterate over each bus_station in the bus_station list
+for (Station in unique_addresses) {
+  # Get coordinates for the bus_station
+  coordinates <- get_coordinates(Station)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_addresses)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates <- c(all_coordinates, list(coordinates))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_mrt <- data.frame(
+  mrt_station_name = unique_addresses,
+  latitude = sapply(all_coordinates, "[[", "latitude"),
+  longitude = sapply(all_coordinates, "[[", "longitude")
+)
+
+
+############### got coordinates_mrt
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_df_with_mrt = data.frame(place = character(), nearest_mrt_distance = double(), mrt_station_name = character(), mrt_within_2km = numeric())
+
+#install.packages("geosphere")
+library(geosphere)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+  for(z in 1:nrow(coordinates_mrt)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(coordinates_mrt[z,3])
+    lat2 = as.numeric(coordinates_mrt[z,2])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_mrt[i,1] = coordinates[i,1]
+  coordinates_df_with_mrt[i,2] = min(check)
+  coordinates_df_with_mrt[i,3] = coordinates_mrt[which.min(check), 1]
+  coordinates_df_with_mrt[i,4] = within_2km
+}
+
+# Getting the coordinates of parks
+library(sf)
+parks2 <- read_sf("../data/Parks.geojson") %>%
+  select(geometry) %>% 
+  extract(geometry, c('lat', 'lon'), '\\((.*), (.*)\\)', convert = TRUE) %>%
+  select(lat) %>%
+  separate(lat, into = c("longitude", "latitude"), sep = "," , convert = TRUE)
+
+##########################
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_df_with_parks = data.frame(place = character(), nearest_park_distance = double(),  parks_within_2km = numeric())
+
+#install.packages("geosphere")
+library(geosphere)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+  for(z in 1:nrow(parks2)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(parks2[z,1])
+    lat2 = as.numeric(parks2[z,2])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_parks[i,1] = coordinates[i,1]
+  coordinates_df_with_parks[i,2] = min(check)
+  coordinates_df_with_parks[i,3] = within_2km
+}
+                                
+#Web Scraping for malls
+library(rvest)
+url="https://en.wikipedia.org/wiki/List_of_shopping_malls_in_Singapore"
+
+df1=read_html(url) %>% html_elements("ul")
+malls3=read_html(url) %>% html_elements(".div-col li") %>% html_text2()
+malls= malls3 %>% as.data.frame() %>%
+  setNames('Mall') %>%
+  mutate(Mall= Mall %>% str_replace("\\[[0-9]+\\]$","")) %>%
+  distinct(Mall) %>%
+  mutate(Mall=Mall %>% str_trim()) %>%
+  mutate(Mall= case_when(Mall =="KINEX (formerly OneKM)" ~ "KINEX",
+                           Mall =="Mustafa Shopping Centre" ~ "Mustafa Centre",
+                           Mall =="Clarke Quay Central" ~ "The Central",
+                           Mall =="Mandarin Gallery" ~ "Hilton Singapore Orchard",
+                           Mall =="City Gate Mall" ~ "City Gate",
+                           Mall =="Holland Village Shopping Mall" ~ "One Holland Village",
+                           Mall =="Shaw House and Centre" ~ "Shaw House",
+                           Mall =="Paya Lebar Quarter (PLQ)" ~ "Paya Lebar Quarter",
+                           Mall =="JCube" ~ "J'DEN",
+                           Mall =="OD Mall" ~ "The Grandstand",
+                           Mall =="PoMo" ~ "GR.ID",
+                           .default=Mall))
+
+
+unique_malls=unique(malls$Mall)
+# Initialize an empty list to store coordinates
+all_coordinates_malls <- list()
+
+# Initialize a counter to track the number of successfully extracted addresses
+success_count <- 0
+
+for (address in unique_malls) {
+  # Get coordinates for the address
+  coordinates_malls <- get_coordinates(address)
+
+  # Check if coordinates are retrieved successfully
+  if (!is.null(coordinates_malls)) {
+    success_count <- success_count + 1
+    cat("Extracted coordinates for", success_count, "out of", length(unique(unique_malls)), "addresses\n")
+
+    # Append coordinates to the list
+    all_coordinates_malls <- c(all_coordinates_malls, list(coordinates_malls))
+  }
+}
+
+# Create a data frame with addresses and corresponding coordinates
+coordinates_df_malls <- data.frame(
+  mall = unique_malls,
+  latitude = sapply(all_coordinates_malls, "[[", "latitude"),
+  longitude = sapply(all_coordinates_malls, "[[", "longitude")
+)
+
+#joined_df_malls <- left_join(sch, coordinates_df_sch, by = "address")
+
+
+
+library(stringr)
+
+
+coordinates_df_with_malls = data.frame(place = character(), distance_to_nearest_mall = double(), mall = character(), malls_within_2km=numeric())
+
+#install.packages("geosphere")
+#library(geosphere)
+coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+for(i in 1:nrow(coordinates)){
+  check = c()
+  within_2km = 0
+
+  for(z in 1:nrow(coordinates_df_malls)){
+    long1 = as.numeric(coordinates[i,3])
+    lat1 = as.numeric(coordinates[i,2])
+    long2 = as.numeric(coordinates_df_malls[z,3])
+    lat2 = as.numeric(coordinates_df_malls[z,2])
+    dist = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+    if (dist<2000){
+      within_2km = within_2km + 1
+    }
+    check[z] = dist
+  }
+  coordinates_df_with_malls[i,1] = coordinates[i,1]
+  coordinates_df_with_malls[i,2] = min(check)
+  coordinates_df_with_malls[i,3] = coordinates_df_malls[which.min(check), 1]
+  coordinates_df_with_malls[i,4] = within_2km
+}
+
+ # Getting the distance to CBD
+ coordinates = coordinates_df %>%
+  filter(!grepl("found", latitude, fixed = TRUE)) %>%
+  mutate_at(vars(latitude, longitude), as.numeric) %>%
+  distinct(address, .keep_all = TRUE)
+
+coordinates_df_with_cbd = data.frame(place = character(), distance_to_cbd = numeric())
+
+#library(geosphere)
+for(i in 1:nrow(coordinates)){
+  long1 = as.numeric(coordinates[i,3])
+  lat1 = as.numeric(coordinates[i,2])
+  long2 = 103.85115313660609
+  lat2 = 1.2854971782559579
+  coordinates_df_with_cbd[i,1] = coordinates[i,1]
+  coordinates_df_with_cbd[i,2] = distm(c(long1, lat1), c(long2, lat2), fun = distHaversine)
+}                                 
+
+final = prices %>%
+  left_join(coordinates_df, by = "address") %>%
+  filter(latitude != '{\n  \"found\": 0,\n  \"totalNumPages\": 0,\n  \"pageNum\": 1,\n  \"results\": []\n}') %>%
+  mutate(latitude = as.numeric(latitude), longitude = as.numeric(longitude)) %>%
+  left_join(coordinates_df_with_bus, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_lrt, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_mrt, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_parks, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_hawker, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_sch, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_supermarkets, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_health, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_malls, by = c("address" = "place")) %>%
+  left_join(coordinates_df_with_cbd, by = c("address" = "place"))
+                                  
+#We then group the Mrt and Lrt locations into one variable
+library(tidyverse)
+
+combine_mrt_lrt = final %>%
+  select(address, nearest_lrt_distance:mrt_within_2km) %>%
+  distinct(address, .keep_all = TRUE)
+
+combined_mrt_lrt = data.frame(address = character(), nearest_mrt_lrt_distance = numeric(), mrt_lrt_station_name = character(), mrt_lrt_within_2km = numeric())
+
+for (i in 1:nrow(combine_mrt_lrt)){
+  if (combine_mrt_lrt[i,2] > combine_mrt_lrt[i,5]){
+    combined_mrt_lrt[i,1] = combine_mrt_lrt[i,1]
+    combined_mrt_lrt[i,2] = combine_mrt_lrt[i,5]
+    combined_mrt_lrt[i,3] = combine_mrt_lrt[i,6]
+    combined_mrt_lrt[i,4] = combine_mrt_lrt[i,4] + combine_mrt_lrt[i,7]
+  }
+  else{
+    combined_mrt_lrt[i,1] = combine_mrt_lrt[i,1]
+    combined_mrt_lrt[i,2] = combine_mrt_lrt[i,2]
+    combined_mrt_lrt[i,3] = combine_mrt_lrt[i,3]
+    combined_mrt_lrt[i,4] = combine_mrt_lrt[i,4] + combine_mrt_lrt[i,7]
+  }
+}
+
+final = final %>%
+  left_join(combined_mrt_lrt, by = c("address" = "address"))
+                                  
+library(tidyverse)
+#final = read.csv("../data/final.csv")
+
+#install.packages("fastDummies")
+#install.packages("car")
+library(fastDummies)
+library(car)
+
+final1 = final %>%
+  rename(region = Region) %>%
+  #rename(school_name = school, mall_name = mall, healthcare_name = healthcare) %>%
+  dplyr::select(resale_price, year, month, town, flat_type, storey_range, floor_area_sqm, flat_model, remaining_lease, max_floor_lvl, multistorey_carpark, precinct_pavilion, region, nearest_bus_distance, bus_within_2km, nearest_park_distance, parks_within_2km, distance_to_nearest_hawker, hawkers_within_2km, distance_to_nearest_healthcare, healthcare_within_2km, distance_to_nearest_mall, malls_within_2km, distance_to_nearest_school, schools_within_2km, distance_to_nearest_supermarket, supermarkets_within_2km, nearest_mrt_lrt_distance, mrt_lrt_within_2km, distance_to_cbd) %>%
+  filter(year != 2024) %>%
+  drop_na() %>%
+  filter(year >= 2010) %>%
+  mutate_at(vars(year, town, month, flat_type, storey_range, flat_model, multistorey_carpark, precinct_pavilion, region), as.factor) %>%
+  mutate(id=row_number()) 
+
+median_income <- read.csv("Median_Income_CPF.csv", skip = 12, header = FALSE)
+colnames(median_income) <- c("year", "median_income_CPF")
+median_income <- median_income[1:24, -ncol(median_income)]
+median_income <- median_income %>% mutate(median_income_CPF = 12*(as.numeric(median_income_CPF)))
+median_income$year <- as.factor(median_income$year)
+
+resale_prices <- left_join(final1, median_income, by = "year")
+resale_prices <- resale_prices %>% mutate(affordability_ratio_CPF = resale_price/median_income_CPF)
+resale_prices <- resale_prices %>%  select(-X, -median_income_CPF, -id)
