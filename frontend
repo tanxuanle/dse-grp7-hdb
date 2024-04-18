@@ -1,3 +1,18 @@
+# install.packages("shiny")
+# install.packages("plotly")
+# install.packages("dplyr")
+# install.packages("shinyWidgets")
+# install.packages("tidyverse")
+# install.packages("sf")
+# install.packages("leaflet")
+# install.packages("RColorBrewer")
+# install.packages("stringr")
+# install.packages("DT")
+# install.packages("bslib")
+# install.packages("shinythemes")
+# install.packages("fastDummies")
+# install.packages("ipred")
+
 ################################ LOAD PACKAGES ################################
 library(shiny)
 library(plotly)
