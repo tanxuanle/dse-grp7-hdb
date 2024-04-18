@@ -64,6 +64,7 @@ resale_prices <- resale_prices %>%
                                   TRUE ~ storey_range))
 
 ### Land Value Analysis ###
+
 land_value <- land_value %>% mutate(town = tolower(town))
 
 ################################################################################
@@ -78,9 +79,11 @@ ui <- page_navbar(
   title = "HDB Resale Prices",
   fillable = "Town Summary",
   nav_panel(icon = bsicons::bs_icon("buildings"),
-            title = "Town Summary",
+
+            ### Tab 1: Town Summary ###
+
+            title = "Town Summary",      
             page_sidebar(
-              # title = "Town Summary",
               sidebar = sidebar(
                 selectInput("town3", "Select Town:", choices = sort(unique(resale_prices$town))),
                 selectizeInput("street3", "Enter Street Name:", choices = NULL, options = list(
@@ -151,11 +154,13 @@ ui <- page_navbar(
               )
             )
   ),
+
+  ### Tab 2: Calculators ### 
+
   nav_menu(icon = bsicons::bs_icon("calculator"), "Calculators",
            nav_panel(
              title = "Resale Price Prediction",
              page_sidebar(
-               # title = "Resale Price Prediction",
                sidebar = sidebar(
                  selectInput("town4", "Select Town", c(sort(unique(resale_prices$town)))),
                  selectInput("street4", "Select Street:", choices = c(sort(unique(resale_prices$street_name)))),
@@ -332,7 +337,7 @@ ui <- page_navbar(
   ),
   
   ### Tab 3: Interactive Map ###
-  
+
   tabPanel(icon = bsicons::bs_icon("map"), "Interactive Map",
            nav_panel(
              title = "Interactive Map",
@@ -523,304 +528,233 @@ ui <- page_navbar(
   )
 )
 
-
+#######################################################################################################
 
 server <- function(input, output, session) {
+
+### 1. "Summary" Tab ###
   
-  ### 1. "Explore" Tab ###
+  ## 1.1 Preparing the Input options ##
   
-  # 1.1 Plotting the Lollipop Plot
+  # Update street name based on selected town
+  observe({
+    updateSelectInput(session, "street3", 
+                      choices = c("All", sort(unique(resale_prices$street_name[resale_prices$town == input$town3]))), selected = "All")
+  })
   
-  # Calculate median resale price by year
-  median_prices1_1 <- reactive({
-    filtered <- resale_prices
+  # Removing "2024" from year input option
+  observe({
+    updateSelectInput(session, "year3", 
+                      choices = c("All", unique(resale_prices$year[resale_prices$year != 2024])), selected = "2023")
+  })
+
+  
+  ## 1.2 Filtering Data for each of the visualizations ##
+  
+  # 1.2.1 Filtering the data for donut charts
+  filtered_donuts <- reactive({
+    req(input$town3, input$year3, input$street3)
     
-    if (input$flat_type1_1 != "All") {
-      filtered <- filtered %>%
-        filter(flat_type == input$flat_type1_1)
+    data <- resale_prices %>%
+      filter(town == input$town3)  # Filter by town first
+    
+    if (input$year3 != "All") {
+      data <- data %>%
+        filter(year == input$year3)  # Further filter by year if necessary
     }
     
-    filtered <- filtered %>%
-      filter(year %in% c(input$firstyear1_1, input$secondyear1_1))
+    if (input$street3 != "All") {
+      data <- data %>%
+        filter(street_name == input$street3)  # Further filter by street if necessary
+    }
     
-    filtered <- filtered %>%
-      group_by(town, year) %>%
-      summarize(median_price = median(resale_price), .groups = "drop") %>%
-      arrange(year) %>%
-      mutate(year = as.factor(year))
-    
-    filtered
+    data
   })
   
   
-  # Plot lollipop plot
-  output$lollipop_plot <- renderPlotly({
-    p <- ggplot(data = median_prices1_1(), aes(x = fct_rev(town), y = median_price, 
-                                               text = paste("Town: ", fct_rev(str_to_title(town)),
-                                                            "<br>Median Resale Price: $", scales::comma(median_price),
-                                                            "<br>Year: ", year))) + 
-      geom_line(aes(group = town), color = "grey", lwd = 2) +
-      geom_point(aes(color = year), size = 2.5) +
-      coord_flip() +
-      labs(title = "Median Resale Prices Across Towns",
-           x = "Median Resale Price (SGD)", 
-           y = "Town", color = "") +  # Set x-axis label here
-      scale_y_continuous(labels = scales::number_format(scale = 1))  # Set tick format here
-    
-    # Convert ggplot to plotly
-    ggplotly(p, tooltip = "text")
-  })
+  # 1.2.2. Filtering the data for the line graph (independent of year and street)
   
-  
-  
-  # 1.2 Plotting the Scatter Plot
-  
-  filtered_data1_2 <- reactive({
+  filtered_line <- reactive({
     resale_prices %>%
-      filter(year == input$year1_2) %>%
-      filter(if ("All" %in% input$region1_2) TRUE else region %in% input$region1_2) %>%
-      filter(if (input$flat_type1_2 == "All") TRUE else flat_type == input$flat_type1_2) %>% 
-      mutate(distance_to_cbd = round(distance_to_cbd/1000), 2)
-  })
-  # Render Median Resale Prices against No. of Transactions 
-  
-  output$scatter_plot <- renderPlotly({
-    # Calculate median resale prices and number of transactions by town
-    median_price_distance <- filtered_data1_2() %>% 
-      group_by(town, region) %>%
-      summarise(median_resale_price = median(resale_price, na.rm = TRUE),
-                dist_to_cbd = mean(distance_to_cbd, na.rm = TRUE))
-    
-    # Plot median resale prices against distance to CBD by town
-    p <- ggplot(median_price_distance, aes(x = dist_to_cbd, y = median_resale_price, color = town, 
-                                           text = paste("Town: ", str_to_title(town), 
-                                                        "<br>Median Resale Price: $", scales::comma(median_resale_price),
-                                                        "<br>Distance to CBD: ", round(dist_to_cbd, 2), " km"))) +
-      geom_point() +
-      geom_text(aes(label = str_to_title(town)), nudge_x = 0.5, nudge_y = 10000, size = 3) +  # Adjust nudge and size as needed
-      labs(title = "Median Resale Prices vs. Distance to CBD",
-           x = "Distance to CBD (km)", y = "Median Resale Price in SGD ($)",
-           caption = "Data source: Resale prices and distance to CBD by town") +
-      scale_color_discrete(guide = FALSE) +  # Remove legend for town names
-      scale_y_continuous(labels = scales::dollar_format(prefix = "$")) +  # Format y-axis labels to display full numbers
-      theme_minimal() +
-      theme(plot.title = element_text(size = 18, hjust = 0.5),  # Center-align the title
-            plot.caption = element_text(hjust = 0.5),  # Center-align the caption
-            axis.title = element_text(size = 14),  # Set the font size of axis titles
-            axis.text = element_text(size = 12))  # Set the font size of axis labels
-    
-    # Convert ggplot to plotly with tooltips
-    ggplotly(p, tooltip = "text")
+      filter(town == input$town3)
   })
   
-  # 1.3. Filtering data for Bubble Plot (Dist to Hawkers VS. Dist to Malls)
+  # 1.2.3. Filtering the data for population demographic
   
-  filtered_data1_3 <- reactive({
-    resale_prices %>%
-      filter(year == input$year1_3) %>%
-      filter(town == input$town1_3) %>% 
-      filter(if (input$flat_type1_3 != "All") flat_type == input$flat_type1_3 else TRUE) %>%
-      group_by(address) %>% slice(which.max(resale_price)) %>% 
-      mutate(distance_to_nearest_mall = distance_to_nearest_mall/1000, 
-             distance_to_nearest_hawker = distance_to_nearest_hawker/1000) 
+  filtered_demographic <- reactive({
+    demographic %>%
+      filter(town_estate == input$town3)
+  })
+  
+  # 1.2.4. Calculate Average Square Meter for the town
+  
+  avg_sqm <- reactive({
+    filtered_data3 <- filtered_donuts()
+    avg_sqm <- mean(filtered_data3$floor_area_sqm)
+    avg_sqm
+  })
+  
+  # Display average square meter for the town
+  output$avg_sqm <- renderText({
+    paste(round(avg_sqm(), 0))
   })
   
   
-  output$bubble_plot <- renderPlotly({
-    # Generate the plot
-    p <- filtered_data1_3() %>% 
-      mutate(text = paste("Address: ", str_to_title(address), 
-                          "<br>Dist to Hawker: ", format(distance_to_nearest_hawker, digits = 2),
-                          "<br>Dist to Mall: ", format(distance_to_nearest_mall, digits = 2), 
-                          "<br>Resale Price: $", scales::comma(resale_price), sep = "")) %>%
-      ggplot(aes(x = distance_to_nearest_hawker, y = distance_to_nearest_mall, 
-                 colour = resale_price, text = text)) +
-      geom_point(alpha = 0.7, size = 5) +
-      labs(title = "Distance to Mall v.s. Distance to Hawker Centers",
-           x = "Distance to Hawker Centers (km)", y = "Distance to Malls (km)") +
-      scale_size(range = c(0.5, 10), name = "Resale Prices (in thousands)",
-                 labels = scales::dollar_format(prefix = "$")) +  # Format labels with commas
-      scale_color_viridis_c(option = "D", labels = scales::comma, direction = -1) +  # Use viridis color palette with darker option and format labels
-      theme_minimal()  # Use minimal theme as a base
+  # 1.2.5. Calculate average resale price per sqm for the town
+  
+  avg_resale_price <- reactive({
+    filtered_data3 <- filtered_donuts()
+    avg_resale_price <- mean(filtered_data3$resale_price)
+    avg_resale_price
+  })
+  
+  # Display average square meter for the town
+  output$avg_resale_price <- renderText({
+    paste("$", round(avg_resale_price(), 0))
+  })
+  
+  
+  # 1.2.6 Display number of transactions 
+  
+  num_tran <- reactive({
+    filtered_data3 <- filtered_donuts() 
+    num_tran <- nrow(filtered_data3)
+    return(num_tran)
+  })
+  
+  output$num_tran <- renderText({
+    paste(num_tran())
+  })
+  
+  
+  ## 1.3 Plotting the Graphs ##
+  
+  # 1.3.1 Donut Chart for Flat types
+  output$flat_type_pie <- renderPlotly({
+    flat_type_counts <- filtered_donuts() %>%
+      mutate(flat_type = factor(flat_type)) %>%
+      count(flat_type)
     
-    # Convert ggplot to plotly
-    ggplotly(p, tooltip = "text") %>%
+    plot_ly(flat_type_counts, labels = ~flat_type, values = ~n, type = "pie", 
+            hole = 0.5, textposition = "inside", 
+            hoverinfo = 'percent+label') %>%
       layout(
-        title = "Distance to Mall v.s. Distance to Hawker Centers",
-        xaxis = list(title = "Distance to Hawker Centers (km)"),
-        yaxis = list(title = "Distance to Malls (km)"),
-        legend = list(title = "Resale Price ($)"),
-        font = list(family = "Arial"),  # Set font family
-        plot_bgcolor = "rgba(0,0,0,0)",  # Set plot background color
-        paper_bgcolor = "rgba(0,0,0,0)",  # Set paper background color
-        hoverlabel = list(bgcolor = "white", font = list(family = "Arial", size = 12))  # Set hover label background and font
+        showlegend = FALSE,
+        margin = list(l = 2, r = 2, b = 5, t = 2)
       )
   })
   
-  # 1.4. Plotting the Bar Graphs
-  
-  # Filtered data based on inputs
-  filtered_data1_4 <- reactive({
-    resale_prices %>%
-      filter(year == input$year1_4,
-             if (input$town1_4 != "All") town == input$town1_4 else TRUE &
-               if (input$flat_type1_4 != "All") flat_type == input$flat_type1_4 else TRUE)
+  # 1.3.2 Donut Chart for Storey range
+  output$storey_range_pie <- renderPlotly({
+    storey_range_counts <- filtered_donuts() %>%
+      mutate(storey_range = factor(storey_range)) %>%
+      count(storey_range)
+    
+    plot_ly(storey_range_counts, labels = ~storey_range, values = ~n, type = "pie", 
+            hole = 0.5, textposition = "inside", 
+            hoverinfo = 'percent+label') %>%    
+      layout(
+        showlegend = FALSE,
+        margin = list(l = 2, r = 2, b = 5, t = 2)    # adjust plot margins
+      )
   })
   
-  # Plot based on selected plot type
-  output$plot1_4 <- renderPlotly({
-    filtered_data <- filtered_data1_4()
+  # 1.3.3. Line graph for Median Resale Price over the years
+  output$median_price_line <- renderPlotly({
+    median_prices <- filtered_line() %>%
+      group_by(year) %>%
+      summarize(median_price = median(resale_price))
     
-    if (input$plot_type1_4 == "Distribution of Flat Types") {
-      # Stacked bar graph: Town VS Flat type
-      plot <- filtered_data %>%
-        group_by(town, flat_type) %>%
-        summarise(count = n(), .groups = "drop") %>%
-        plot_ly(x = ~count, y = ~town, color = ~flat_type, type = "bar", source = "graph1", height = 500) %>%
-        layout(title = "Distribution of Flat Types Across Towns", 
-               xaxis = list(title = "Count"), 
-               yaxis = list(title = "Town", categoryorder = "total ascending"),
-               barmode = "stack")
-    } 
-    else if (input$plot_type1_4 == "Average Resale Price") {
-      # Average resale price by town
-      plot <- filtered_data %>%
-        group_by(town) %>%
-        summarise(avg_resale_price = mean(resale_price)) %>%
-        plot_ly(x = ~avg_resale_price, y = ~town, type = "bar", source = "graph2", height = 500) %>%
-        layout(title = "Average Resale Price by Town", xaxis = list(title = "Average Resale Price (SGD)"), yaxis = list(title = "Town", categoryorder = "total ascending"))
-    } 
-    else if (input$plot_type1_4 == "Average Floor Area") {
-      # Average floor area by town
-      plot <- filtered_data %>%
-        group_by(town) %>%
-        summarise(avg_floor_area = mean(floor_area_sqm)) %>%
-        plot_ly(x = ~avg_floor_area, y = ~town, type = "bar", source = "graph3", height = 500) %>%
-        layout(title = "Average Floor Area by Town", xaxis = list(title = "Average Floor Area (sqm)"), yaxis = list(title = "Town", categoryorder = "total ascending"))
-    }
+    plot_ly(data = median_prices, x = ~year, y = ~median_price, type = "scatter", mode = "lines") %>%
+      layout(
+        xaxis = list(title = "Year"), 
+        yaxis = list(title = "Median Resale Price"), 
+        
+        margin = list(l = 5, r = 5, b = 5, t = 5)
+      )
+  })
+  
+  # 1.3.4. Bar plot for Population distribution
+  output$demographics_bar <- renderPlotly({
+    demographic <- filtered_demographic()
     
-    plot
+    demographic$age_group <- factor(demographic$age_group, 
+                                    level = c("Below 15", "15  -  24", "25  -  34", "35  -  44", "45  -  54", "55  -  64", "65 & Above"))
+    
+    plot_ly(demographic, x = ~popbyage, y = ~age_group, type = "bar", orientation = "h",
+            marker = list(color = "skyblue")) %>%
+      layout(
+        xaxis = list(title = "Age Group"), 
+        yaxis = list(title = "Population"), 
+        margin = list(l = 5, r = 5, b = 5, t = 5))
   })
   
   # Reactive expression for filtered data
-  filtered_data2 <- reactive({
-    resale_prices %>%
-      filter(year == input$year2) %>%
-      filter(if (input$town2 != "All") town == input$town2 else TRUE) %>%
-      filter(if (input$flat_type2 != "All") flat_type == input$flat_type2 else TRUE) %>%
-      group_by(address) %>% group_by(town) %>%
-      summarise(median_price = median(resale_price, na.rm = TRUE),
-                median_price_sqm = median(resale_price / floor_area_sqm, na.rm = TRUE),
-                avg_remaining_lease = round(mean(remaining_lease, na.rm = TRUE), 0),
-                affordability_ratio = mean(affordability_ratio_CPF), # Calculate affordability ratio
-                longitude = first(longitude),
-                latitude = first(latitude),
-                .groups = 'drop') %>%
-      right_join(town_boundaries, by = c("town" = "planning_area")) %>%
-      mutate(geometry = sf::st_make_valid(geometry)) %>% 
-      sf::st_as_sf()
+  filtered_table <- reactive({
+    req(input$town3, input$year3, input$street3)
+    resale_prices %>% filter(year == input$year3, town == input$town3, street_name == input$street3)
   })
   
-  
-  # Plotting the Chloropleth Map
-  
-  output$choropleth_map <- renderPlotly({
+  # Create top amenities dataframe
+  top_amenities <- reactive({
+    # For Nearest Bus
+    nearest_bus <- filtered_table() %>%
+      group_by(bus_station_name) %>%
+      summarize(mean_dist = mean(nearest_bus_distance)) %>%
+      mutate(amenities_type = "Bus Stop", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = bus_station_name, amenities_dist = mean_dist)
     
-    # Render the Choropleth map based on the selected variable
-    p <- ggplot(data = filtered_data2()) +
-      geom_sf(aes(fill = !!sym(input$variable), 
-                  text = ifelse(!is.na(median_price), 
-                                paste("Town: ", str_to_title(town), "<br>",
-                                      "Median Price: $", format(median_price, digits = 2), "<br>",
-                                      "Median Price Per Sqm: $", format(median_price_sqm, digits = 2),"<br>",
-                                      "Average Remaining Lease: ", format(avg_remaining_lease, digits = 2),"<br>",
-                                      "Affordability Ratio: ", format(affordability_ratio, digits = 2)),
-                                "")),
-              colour = alpha("white", 0.1)) +
-      scale_fill_distiller(
-        name = switch(input$variable,
-                      "median_price_sqm" = "Median Resale Price per Sqm",
-                      "avg_remaining_lease" = "Average Remaining Lease",
-                      "affordability_ratio" = "Affordability Ratio"),
-        palette = switch(input$variable,
-                         "median_price_sqm" = "Blues",  # Blue palette for median resale price
-                         "avg_remaining_lease" = "Greens",  # Green palette for average remaining lease
-                         "affordability_ratio" = "YlOrRd"),  # Red palette for towns with ratio > 5, orange for the rest
-        na.value = "grey", 
-        trans = "reverse",
-        labels = function(x) {
-          if (input$variable == "avg_remaining_lease") {
-            scales::number_format(suffix = " years")(x)
-          } else if (input$variable == "affordability_ratio") {
-            scales::number_format(accuracy = 0.01)(x)
-          } else {
-            scales::dollar_format(prefix = "$")(x)
-          }
-        }
-      ) +  
-      labs(title = "Choropleth Map by Planning Area") +
-      theme_minimal()    
+    # For Nearest MRT
+    nearest_mrt <- filtered_table() %>%
+      group_by(mrt_lrt_station_name) %>%
+      summarize(mean_dist = mean(nearest_mrt_lrt_distance)) %>%
+      mutate(amenities_type = "MRT/LRT Station", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = mrt_lrt_station_name, amenities_dist = mean_dist)
     
-    # Convert ggplot to plotly
-    ggplotly(p, tooltip = "text")
+    # For Nearest Hawker
+    nearest_hawker <- filtered_table() %>%
+      group_by(nearest_hawker) %>%
+      summarize(mean_dist = mean(distance_to_nearest_hawker)) %>%
+      mutate(amenities_type = "Hawker Centre", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = nearest_hawker, amenities_dist = mean_dist)
     
+    # For Nearest Mall
+    nearest_mall <- filtered_table() %>%
+      group_by(mall) %>%
+      summarize(mean_dist = mean(distance_to_nearest_mall)) %>%
+      mutate(amenities_type = "Shopping Mall", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = mall, amenities_dist = mean_dist)
+    
+    # For Nearest School
+    nearest_school <- filtered_table() %>%
+      group_by(school) %>%
+      summarize(mean_dist = mean(distance_to_nearest_school)) %>%
+      mutate(amenities_type = "School", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = school, amenities_dist = mean_dist)
+    
+    # Combine all results into one dataframe
+    all_amenities <- rbind(nearest_bus, nearest_mrt, nearest_hawker, nearest_mall, nearest_school)
+    
+    # Return top amenities
+    all_amenities %>% group_by(amenities_type) %>%
+      slice_min(order_by = amenities_dist, n = 1)
   })
   
-  filtered_data2_2 <- reactive({
-    resale_prices %>%
-      filter(year == input$year2) %>%
-      filter(if (input$flat_type2 != "All") flat_type == input$flat_type2 else TRUE) %>%
-      group_by(town) %>%
-      summarise(median_price = median(resale_price, na.rm = TRUE),
-                median_price_sqm = median(resale_price / floor_area_sqm, na.rm = TRUE),
-                avg_remaining_lease = round(mean(remaining_lease, na.rm = TRUE), 0),
-                affordability_ratio = mean(affordability_ratio_CPF)) # Calculate affordability ratio
-  })
-  
-  
-  output$subtitle_1 <- renderUI({
-    if (input$variable == "median_price_sqm") {
-      # Select the top 3 most expensive towns among the unique towns
-      top_expensive <- head(arrange(filtered_data2_2(), desc(median_price)), 3)
-      title <- "<strong>Top 3 Most Expensive Towns: </strong>"
-      formatted_towns <- paste(seq_along(str_to_title(top_expensive$town)), ". ", str_to_title(top_expensive$town), " - $", scales::comma(top_expensive$median_price), collapse = "<br>")
-    } else if (input$variable == "avg_remaining_lease") {
-      # Select the top 3 oldest towns among the unique towns
-      top_youngest <- head(arrange(filtered_data2_2(), avg_remaining_lease), 3)
-      title <- "<strong>Top 3 Oldest Towns: </strong>"
-      formatted_towns <- paste(str_to_title(seq_along(top_youngest$town)), ". ", str_to_title(top_youngest$town), " - ", format(99 - top_youngest$avg_remaining_lease, digits = 2), " years",collapse = "<br>")
-    } else if (input$variable == "affordability_ratio") {
-      # Select the top 3 most unaffordable towns among the unique towns
-      top_unaffordable <- head(arrange(filtered_data2_2(), desc(affordability_ratio)), 3)
-      title <- "<strong>Top 3 Least Affordable Towns: </strong>"
-      formatted_towns <- paste(str_to_title(seq_along(top_unaffordable$town)), ". ", str_to_title(top_unaffordable$town), " - ", format(top_unaffordable$affordability_ratio, digits = 2), collapse = "<br>")
-    } 
-    HTML(paste(title, formatted_towns))
-  })
-  
-  output$subtitle_2 <- renderUI({
-    if (input$variable == "median_price_sqm") {
-      # Select the top 3 least expensive towns among the unique towns
-      top_expensive <- head(arrange(filtered_data2_2(), median_price), 3)
-      title <- "<strong>Top 3 Least Expensive Towns: </strong>"
-      formatted_towns <- paste(seq_along(top_expensive$town), ". ", top_expensive$town, " - $", scales::comma(top_expensive$median_price), collapse = "<br>")
-    } else if (input$variable == "avg_remaining_lease") {
-      # Select the top 3 youngest towns among the unique towns
-      top_youngest <- head(arrange(filtered_data2_2(), desc(avg_remaining_lease)), 3)
-      title <- "<strong>Top 3 Youngest Towns: </strong>"
-      formatted_towns <- paste(seq_along(top_youngest$town), ". ", top_youngest$town, " - ", format(99 - top_youngest$avg_remaining_lease, digits = 2), " years",collapse = "<br>")
-    } else if (input$variable == "affordability_ratio") {
-      # Select the top 3 most unaffordable towns among the unique towns
-      top_unaffordable <- head(arrange(filtered_data2_2(), affordability_ratio), 3)
-      title <- "<strong>Top 3 Most Affordable Towns: </strong>"
-      formatted_towns <- paste(seq_along(top_unaffordable$town), ". ", top_unaffordable$town, " - ", format(top_unaffordable$affordability_ratio, digits = 2), collapse = "<br>")
-    } 
-    HTML(paste(title, str_to_title(formatted_towns)))
-  })
-  
-  ### 4. "Calculator" Tab ###
-  
-  # 4.1 Leaflet Map
+  # Render datatable
+  output$nearest_amenities_table <- renderDT({
+    top_amenities() %>%
+      rename("Amenity Type" = amenities_type,
+             "Amenity Name" = amenities_name,
+             "Dist To Amenity (m)" = amenities_dist) %>%
+      select("Amenity Type", everything())
+  }, options = list(dom = 't',  searching = FALSE))
+
+
+ ### 2. "Calculator" Tab ###
+
+  ## 2.1. Resale Price Prediction Calculator
+
+  # 2.1.1 Leaflet Map
   
   # Filtered data without summarizing
   filtered_data4_1 <- reactive({
@@ -889,7 +823,6 @@ server <- function(input, output, session) {
     
   })
   
-  
   # Reactive expression for filtered data
   filtered_data4_2 <- reactive({
     resale_prices %>%
@@ -919,7 +852,8 @@ server <- function(input, output, session) {
   output$analysis <- renderUI({
     HTML(paste(filtered_land_value()$analysis))
   })
-  
+
+
   ## Prediction model Input filters ##
   
   # Reactive expression for filtered data
@@ -961,7 +895,7 @@ server <- function(input, output, session) {
   })
   
   
-  ## Calculate and render resale price prediction ##
+  ## 2.1.2. Calculate and render resale price prediction ##
   output$resale_price_prediction <- renderText({
     req(input$calculate_button)
     
@@ -1050,9 +984,9 @@ server <- function(input, output, session) {
     
     paste(prediction)
   })
-  
-  
-  ## Land Value Analysis Textbox 
+
+
+  ## 2.1.3. Land Value Analysis Textbox ##
   
   filtered_land_value <- reactive({
     land_value %>%
@@ -1064,7 +998,7 @@ server <- function(input, output, session) {
   })
   
   
-  ### Downsizing  ###
+  ### 2.2.1.1. Downsizing  ###
   
   ## Current Flat Price Prediction ##
   
@@ -1209,7 +1143,7 @@ server <- function(input, output, session) {
   })
   
   
-  ## New Resale Flat Prediction ##
+  ## 2.2.1.2 New Resale Flat Prediction ##
   
   ## Prediction model Input filters ##
   
@@ -1358,7 +1292,7 @@ server <- function(input, output, session) {
   })
   
   
-  ### Lease Buyback Scheme ###
+  ### 2.2.2. Lease Buyback Scheme ###
   
   observe({
     num_owners <- as.integer(input$owners)
@@ -1470,7 +1404,6 @@ server <- function(input, output, session) {
     }
   })
   
-  
   calculate_bonus <- function(top_up_amount, flat_type) {     # calculating LBS bonus
     req(top_up_amount)
     if (is.null(top_up_amount) || flat_type == ""){
@@ -1515,231 +1448,294 @@ server <- function(input, output, session) {
       paste("$", total)
     } else{paste("")}
   })
-  
-  
-  
-  ### 3. "Summary" Tab ###
-  
-  ## 3.1 Preparing the Input options ##
-  
-  # Update street name based on selected town
-  observe({
-    updateSelectInput(session, "street3", 
-                      choices = c("All", sort(unique(resale_prices$street_name[resale_prices$town == input$town3]))), selected = "All")
-  })
-  
-  # Removing "2024" from year input option
-  observe({
-    updateSelectInput(session, "year3", 
-                      choices = c("All", unique(resale_prices$year[resale_prices$year != 2024])), selected = "2023")
-  })
-  
-  
-  
-  ## 3.2 Filtering Data for each of the visualizations ##
-  
-  # 3.2.1 Filtering the data for donut charts
-  filtered_donuts <- reactive({
-    req(input$town3, input$year3, input$street3)
-    
-    data <- resale_prices %>%
-      filter(town == input$town3)  # Filter by town first
-    
-    if (input$year3 != "All") {
-      data <- data %>%
-        filter(year == input$year3)  # Further filter by year if necessary
-    }
-    
-    if (input$street3 != "All") {
-      data <- data %>%
-        filter(street_name == input$street3)  # Further filter by street if necessary
-    }
-    
-    data
-  })
-  
-  
-  # 3.2.2. Filtering the data for the line graph (independent of year and street)
-  
-  filtered_line <- reactive({
+
+
+### 3. "Interactive" Tab ###
+
+ # Reactive expression for filtered data
+  filtered_data2 <- reactive({
     resale_prices %>%
-      filter(town == input$town3)
+      filter(year == input$year2) %>%
+      filter(if (input$town2 != "All") town == input$town2 else TRUE) %>%
+      filter(if (input$flat_type2 != "All") flat_type == input$flat_type2 else TRUE) %>%
+      group_by(address) %>% group_by(town) %>%
+      summarise(median_price = median(resale_price, na.rm = TRUE),
+                median_price_sqm = median(resale_price / floor_area_sqm, na.rm = TRUE),
+                avg_remaining_lease = round(mean(remaining_lease, na.rm = TRUE), 0),
+                affordability_ratio = mean(affordability_ratio_CPF), # Calculate affordability ratio
+                longitude = first(longitude),
+                latitude = first(latitude),
+                .groups = 'drop') %>%
+      right_join(town_boundaries, by = c("town" = "planning_area")) %>%
+      mutate(geometry = sf::st_make_valid(geometry)) %>% 
+      sf::st_as_sf()
   })
+
+
+  # 3.1 Plotting the Chloropleth Map
   
-  # 3.2.3. Filtering the data for population demographic
-  
-  filtered_demographic <- reactive({
-    demographic %>%
-      filter(town_estate == input$town3)
-  })
-  
-  
-  # 3.2.4. Calculate Average Square Meter for the town
-  
-  avg_sqm <- reactive({
-    filtered_data3 <- filtered_donuts()
-    avg_sqm <- mean(filtered_data3$floor_area_sqm)
-    avg_sqm
-  })
-  
-  # Display average square meter for the town
-  output$avg_sqm <- renderText({
-    paste(round(avg_sqm(), 0))
-  })
-  
-  
-  # 3.2.5. Calculate average resale price per sqm for the town
-  
-  avg_resale_price <- reactive({
-    filtered_data3 <- filtered_donuts()
-    avg_resale_price <- mean(filtered_data3$resale_price)
-    avg_resale_price
-  })
-  
-  # Display average square meter for the town
-  output$avg_resale_price <- renderText({
-    paste("$", round(avg_resale_price(), 0))
-  })
-  
-  
-  #3.2.6 Display number of transactions 
-  
-  num_tran <- reactive({
-    filtered_data3 <- filtered_donuts() 
-    num_tran <- nrow(filtered_data3)
-    return(num_tran)
-  })
-  
-  output$num_tran <- renderText({
-    paste(num_tran())
-  })
-  
-  
-  ## 3.3 Plotting the Graphs ##
-  
-  # 3.3.1 Donut Chart for Flat types
-  output$flat_type_pie <- renderPlotly({
-    flat_type_counts <- filtered_donuts() %>%
-      mutate(flat_type = factor(flat_type)) %>%
-      count(flat_type)
+  output$choropleth_map <- renderPlotly({
+    # Render the Choropleth map based on the selected variable
+    p <- ggplot(data = filtered_data2()) +
+      geom_sf(aes(fill = !!sym(input$variable), 
+                  text = ifelse(!is.na(median_price), 
+                                paste("Town: ", str_to_title(town), "<br>",
+                                      "Median Price: $", format(median_price, digits = 2), "<br>",
+                                      "Median Price Per Sqm: $", format(median_price_sqm, digits = 2),"<br>",
+                                      "Average Remaining Lease: ", format(avg_remaining_lease, digits = 2),"<br>",
+                                      "Affordability Ratio: ", format(affordability_ratio, digits = 2)),
+                                "")),
+              colour = alpha("white", 0.1)) +
+      scale_fill_distiller(
+        name = switch(input$variable,
+                      "median_price_sqm" = "Median Resale Price per Sqm",
+                      "avg_remaining_lease" = "Average Remaining Lease",
+                      "affordability_ratio" = "Affordability Ratio"),
+        palette = switch(input$variable,
+                         "median_price_sqm" = "Blues",  # Blue palette for median resale price
+                         "avg_remaining_lease" = "Greens",  # Green palette for average remaining lease
+                         "affordability_ratio" = "YlOrRd"),  # Red palette for towns with ratio > 5, orange for the rest
+        na.value = "grey", 
+        trans = "reverse",
+        labels = function(x) {
+          if (input$variable == "avg_remaining_lease") {
+            scales::number_format(suffix = " years")(x)
+          } else if (input$variable == "affordability_ratio") {
+            scales::number_format(accuracy = 0.01)(x)
+          } else {
+            scales::dollar_format(prefix = "$")(x)
+          }
+        }
+      ) +  
+      labs(title = "Choropleth Map by Planning Area") +
+      theme_minimal()    
     
-    plot_ly(flat_type_counts, labels = ~flat_type, values = ~n, type = "pie", 
-            hole = 0.5, textposition = "inside", 
-            hoverinfo = 'percent+label') %>%
+    # Convert ggplot to plotly
+    ggplotly(p, tooltip = "text")
+  })
+  
+  filtered_data2_2 <- reactive({
+    resale_prices %>%
+      filter(year == input$year2) %>%
+      filter(if (input$flat_type2 != "All") flat_type == input$flat_type2 else TRUE) %>%
+      group_by(town) %>%
+      summarise(median_price = median(resale_price, na.rm = TRUE),
+                median_price_sqm = median(resale_price / floor_area_sqm, na.rm = TRUE),
+                avg_remaining_lease = round(mean(remaining_lease, na.rm = TRUE), 0),
+                affordability_ratio = mean(affordability_ratio_CPF)) # Calculate affordability ratio
+  })
+  
+  output$subtitle_1 <- renderUI({
+    if (input$variable == "median_price_sqm") {
+      # Select the top 3 most expensive towns among the unique towns
+      top_expensive <- head(arrange(filtered_data2_2(), desc(median_price)), 3)
+      title <- "<strong>Top 3 Most Expensive Towns: </strong>"
+      formatted_towns <- paste(seq_along(str_to_title(top_expensive$town)), ". ", str_to_title(top_expensive$town), " - $", scales::comma(top_expensive$median_price), collapse = "<br>")
+    } else if (input$variable == "avg_remaining_lease") {
+      # Select the top 3 oldest towns among the unique towns
+      top_youngest <- head(arrange(filtered_data2_2(), avg_remaining_lease), 3)
+      title <- "<strong>Top 3 Oldest Towns: </strong>"
+      formatted_towns <- paste(str_to_title(seq_along(top_youngest$town)), ". ", str_to_title(top_youngest$town), " - ", format(99 - top_youngest$avg_remaining_lease, digits = 2), " years",collapse = "<br>")
+    } else if (input$variable == "affordability_ratio") {
+      # Select the top 3 most unaffordable towns among the unique towns
+      top_unaffordable <- head(arrange(filtered_data2_2(), desc(affordability_ratio)), 3)
+      title <- "<strong>Top 3 Least Affordable Towns: </strong>"
+      formatted_towns <- paste(str_to_title(seq_along(top_unaffordable$town)), ". ", str_to_title(top_unaffordable$town), " - ", format(top_unaffordable$affordability_ratio, digits = 2), collapse = "<br>")
+    } 
+    HTML(paste(title, formatted_towns))
+  })
+  
+  output$subtitle_2 <- renderUI({
+    if (input$variable == "median_price_sqm") {
+      # Select the top 3 least expensive towns among the unique towns
+      top_expensive <- head(arrange(filtered_data2_2(), median_price), 3)
+      title <- "<strong>Top 3 Least Expensive Towns: </strong>"
+      formatted_towns <- paste(seq_along(top_expensive$town), ". ", top_expensive$town, " - $", scales::comma(top_expensive$median_price), collapse = "<br>")
+    } else if (input$variable == "avg_remaining_lease") {
+      # Select the top 3 youngest towns among the unique towns
+      top_youngest <- head(arrange(filtered_data2_2(), desc(avg_remaining_lease)), 3)
+      title <- "<strong>Top 3 Youngest Towns: </strong>"
+      formatted_towns <- paste(seq_along(top_youngest$town), ". ", top_youngest$town, " - ", format(99 - top_youngest$avg_remaining_lease, digits = 2), " years",collapse = "<br>")
+    } else if (input$variable == "affordability_ratio") {
+      # Select the top 3 most unaffordable towns among the unique towns
+      top_unaffordable <- head(arrange(filtered_data2_2(), affordability_ratio), 3)
+      title <- "<strong>Top 3 Most Affordable Towns: </strong>"
+      formatted_towns <- paste(seq_along(top_unaffordable$town), ". ", top_unaffordable$town, " - ", format(top_unaffordable$affordability_ratio, digits = 2), collapse = "<br>")
+    } 
+    HTML(paste(title, str_to_title(formatted_towns)))
+  })
+
+
+  ### 4. "Explore" Tab ###
+  
+  # 4.1 Plotting the Lollipop Plot
+  
+  # Calculate median resale price by year
+  median_prices1_1 <- reactive({
+    filtered <- resale_prices
+    
+    if (input$flat_type1_1 != "All") {
+      filtered <- filtered %>%
+        filter(flat_type == input$flat_type1_1)
+    }
+    
+    filtered <- filtered %>%
+      filter(year %in% c(input$firstyear1_1, input$secondyear1_1))
+    
+    filtered <- filtered %>%
+      group_by(town, year) %>%
+      summarize(median_price = median(resale_price), .groups = "drop") %>%
+      arrange(year) %>%
+      mutate(year = as.factor(year))
+    
+    filtered
+  })
+
+  # Plot lollipop plot
+  output$lollipop_plot <- renderPlotly({
+    p <- ggplot(data = median_prices1_1(), aes(x = fct_rev(town), y = median_price, 
+                                               text = paste("Town: ", fct_rev(str_to_title(town)),
+                                                            "<br>Median Resale Price: $", scales::comma(median_price),
+                                                            "<br>Year: ", year))) + 
+      geom_line(aes(group = town), color = "grey", lwd = 2) +
+      geom_point(aes(color = year), size = 2.5) +
+      coord_flip() +
+      labs(title = "Median Resale Prices Across Towns",
+           x = "Median Resale Price (SGD)", 
+           y = "Town", color = "") +  # Set x-axis label here
+      scale_y_continuous(labels = scales::number_format(scale = 1))  # Set tick format here
+    
+    # Convert ggplot to plotly
+    ggplotly(p, tooltip = "text")
+  })
+
+
+  # 4.2 Plotting the Scatter Plot
+  
+  filtered_data1_2 <- reactive({
+    resale_prices %>%
+      filter(year == input$year1_2) %>%
+      filter(if ("All" %in% input$region1_2) TRUE else region %in% input$region1_2) %>%
+      filter(if (input$flat_type1_2 == "All") TRUE else flat_type == input$flat_type1_2) %>% 
+      mutate(distance_to_cbd = round(distance_to_cbd/1000), 2)
+  })
+  # Render Median Resale Prices against No. of Transactions 
+  
+  output$scatter_plot <- renderPlotly({
+    # Calculate median resale prices and number of transactions by town
+    median_price_distance <- filtered_data1_2() %>% 
+      group_by(town, region) %>%
+      summarise(median_resale_price = median(resale_price, na.rm = TRUE),
+                dist_to_cbd = mean(distance_to_cbd, na.rm = TRUE))
+    
+    # Plot median resale prices against distance to CBD by town
+    p <- ggplot(median_price_distance, aes(x = dist_to_cbd, y = median_resale_price, color = town, 
+                                           text = paste("Town: ", str_to_title(town), 
+                                                        "<br>Median Resale Price: $", scales::comma(median_resale_price),
+                                                        "<br>Distance to CBD: ", round(dist_to_cbd, 2), " km"))) +
+      geom_point() +
+      geom_text(aes(label = str_to_title(town)), nudge_x = 0.5, nudge_y = 10000, size = 3) +  # Adjust nudge and size as needed
+      labs(title = "Median Resale Prices vs. Distance to CBD",
+           x = "Distance to CBD (km)", y = "Median Resale Price in SGD ($)",
+           caption = "Data source: Resale prices and distance to CBD by town") +
+      scale_color_discrete(guide = FALSE) +  # Remove legend for town names
+      scale_y_continuous(labels = scales::dollar_format(prefix = "$")) +  # Format y-axis labels to display full numbers
+      theme_minimal() +
+      theme(plot.title = element_text(size = 18, hjust = 0.5),  # Center-align the title
+            plot.caption = element_text(hjust = 0.5),  # Center-align the caption
+            axis.title = element_text(size = 14),  # Set the font size of axis titles
+            axis.text = element_text(size = 12))  # Set the font size of axis labels
+    
+    # Convert ggplot to plotly with tooltips
+    ggplotly(p, tooltip = "text")
+  })
+  
+  # 4.3. Filtering data for Bubble Plot (Dist to Hawkers VS. Dist to Malls)
+  
+  filtered_data1_3 <- reactive({
+    resale_prices %>%
+      filter(year == input$year1_3) %>%
+      filter(town == input$town1_3) %>% 
+      filter(if (input$flat_type1_3 != "All") flat_type == input$flat_type1_3 else TRUE) %>%
+      group_by(address) %>% slice(which.max(resale_price)) %>% 
+      mutate(distance_to_nearest_mall = distance_to_nearest_mall/1000, 
+             distance_to_nearest_hawker = distance_to_nearest_hawker/1000) 
+  })
+  
+  output$bubble_plot <- renderPlotly({
+    # Generate the plot
+    p <- filtered_data1_3() %>% 
+      mutate(text = paste("Address: ", str_to_title(address), 
+                          "<br>Dist to Hawker: ", format(distance_to_nearest_hawker, digits = 2),
+                          "<br>Dist to Mall: ", format(distance_to_nearest_mall, digits = 2), 
+                          "<br>Resale Price: $", scales::comma(resale_price), sep = "")) %>%
+      ggplot(aes(x = distance_to_nearest_hawker, y = distance_to_nearest_mall, 
+                 colour = resale_price, text = text)) +
+      geom_point(alpha = 0.7, size = 5) +
+      labs(title = "Distance to Mall v.s. Distance to Hawker Centers",
+           x = "Distance to Hawker Centers (km)", y = "Distance to Malls (km)") +
+      scale_size(range = c(0.5, 10), name = "Resale Prices (in thousands)",
+                 labels = scales::dollar_format(prefix = "$")) +  # Format labels with commas
+      scale_color_viridis_c(option = "D", labels = scales::comma, direction = -1) +  # Use viridis color palette with darker option and format labels
+      theme_minimal()  # Use minimal theme as a base
+    
+    # Convert ggplot to plotly
+    ggplotly(p, tooltip = "text") %>%
       layout(
-        showlegend = FALSE,
-        margin = list(l = 2, r = 2, b = 5, t = 2)
+        title = "Distance to Mall v.s. Distance to Hawker Centers",
+        xaxis = list(title = "Distance to Hawker Centers (km)"),
+        yaxis = list(title = "Distance to Malls (km)"),
+        legend = list(title = "Resale Price ($)"),
+        font = list(family = "Arial"),  # Set font family
+        plot_bgcolor = "rgba(0,0,0,0)",  # Set plot background color
+        paper_bgcolor = "rgba(0,0,0,0)",  # Set paper background color
+        hoverlabel = list(bgcolor = "white", font = list(family = "Arial", size = 12))  # Set hover label background and font
       )
   })
   
+  # 4.4. Plotting the Bar Graphs
   
-  # 3.3.2 Donut Chart for Storey range
-  output$storey_range_pie <- renderPlotly({
-    storey_range_counts <- filtered_donuts() %>%
-      mutate(storey_range = factor(storey_range)) %>%
-      count(storey_range)
-    
-    plot_ly(storey_range_counts, labels = ~storey_range, values = ~n, type = "pie", 
-            hole = 0.5, textposition = "inside", 
-            hoverinfo = 'percent+label') %>%    
-      layout(
-        showlegend = FALSE,
-        margin = list(l = 2, r = 2, b = 5, t = 2)    # adjust plot margins
-      )
+  # Filtered data based on inputs
+  filtered_data1_4 <- reactive({
+    resale_prices %>%
+      filter(year == input$year1_4,
+             if (input$town1_4 != "All") town == input$town1_4 else TRUE &
+               if (input$flat_type1_4 != "All") flat_type == input$flat_type1_4 else TRUE)
   })
   
-  
-  # 3.3.3. Line graph for Median Resale Price over the years
-  output$median_price_line <- renderPlotly({
-    median_prices <- filtered_line() %>%
-      group_by(year) %>%
-      summarize(median_price = median(resale_price))
+  # Plot based on selected plot type
+  output$plot1_4 <- renderPlotly({
+    filtered_data <- filtered_data1_4()
     
-    plot_ly(data = median_prices, x = ~year, y = ~median_price, type = "scatter", mode = "lines") %>%
-      layout(
-        xaxis = list(title = "Year"), 
-        yaxis = list(title = "Median Resale Price"), 
-        
-        margin = list(l = 5, r = 5, b = 5, t = 5)
-      )
+    if (input$plot_type1_4 == "Distribution of Flat Types") {
+      # Stacked bar graph: Town VS Flat type
+      plot <- filtered_data %>%
+        group_by(town, flat_type) %>%
+        summarise(count = n(), .groups = "drop") %>%
+        plot_ly(x = ~count, y = ~town, color = ~flat_type, type = "bar", source = "graph1", height = 500) %>%
+        layout(title = "Distribution of Flat Types Across Towns", 
+               xaxis = list(title = "Count"), 
+               yaxis = list(title = "Town", categoryorder = "total ascending"),
+               barmode = "stack")
+    } 
+    else if (input$plot_type1_4 == "Average Resale Price") {
+      # Average resale price by town
+      plot <- filtered_data %>%
+        group_by(town) %>%
+        summarise(avg_resale_price = mean(resale_price)) %>%
+        plot_ly(x = ~avg_resale_price, y = ~town, type = "bar", source = "graph2", height = 500) %>%
+        layout(title = "Average Resale Price by Town", xaxis = list(title = "Average Resale Price (SGD)"), yaxis = list(title = "Town", categoryorder = "total ascending"))
+    } 
+    else if (input$plot_type1_4 == "Average Floor Area") {
+      # Average floor area by town
+      plot <- filtered_data %>%
+        group_by(town) %>%
+        summarise(avg_floor_area = mean(floor_area_sqm)) %>%
+        plot_ly(x = ~avg_floor_area, y = ~town, type = "bar", source = "graph3", height = 500) %>%
+        layout(title = "Average Floor Area by Town", xaxis = list(title = "Average Floor Area (sqm)"), yaxis = list(title = "Town", categoryorder = "total ascending"))
+    }
+    plot
   })
-  
-  
-  # 3.3.4. Bar plot for Population distribution
-  output$demographics_bar <- renderPlotly({
-    demographic <- filtered_demographic()
-    
-    demographic$age_group <- factor(demographic$age_group, 
-                                    level = c("Below 15", "15  -  24", "25  -  34", "35  -  44", "45  -  54", "55  -  64", "65 & Above"))
-    
-    plot_ly(demographic, x = ~popbyage, y = ~age_group, type = "bar", orientation = "h",
-            marker = list(color = "skyblue")) %>%
-      layout(
-        xaxis = list(title = "Age Group"), 
-        yaxis = list(title = "Population"), 
-        margin = list(l = 5, r = 5, b = 5, t = 5))
-  })
-  
-  # Reactive expression for filtered data
-  filtered_table <- reactive({
-    req(input$town3, input$year3, input$street3)
-    resale_prices %>% filter(year == input$year3, town == input$town3, street_name == input$street3)
-  })
-  
-  # Create top amenities dataframe
-  top_amenities <- reactive({
-    # For Nearest Bus
-    nearest_bus <- filtered_table() %>%
-      group_by(bus_station_name) %>%
-      summarize(mean_dist = mean(nearest_bus_distance)) %>%
-      mutate(amenities_type = "Bus Stop", mean_dist = round(mean_dist, 2)) %>% 
-      rename(amenities_name = bus_station_name, amenities_dist = mean_dist)
-    
-    # For Nearest MRT
-    nearest_mrt <- filtered_table() %>%
-      group_by(mrt_lrt_station_name) %>%
-      summarize(mean_dist = mean(nearest_mrt_lrt_distance)) %>%
-      mutate(amenities_type = "MRT/LRT Station", mean_dist = round(mean_dist, 2)) %>% 
-      rename(amenities_name = mrt_lrt_station_name, amenities_dist = mean_dist)
-    
-    # For Nearest Hawker
-    nearest_hawker <- filtered_table() %>%
-      group_by(nearest_hawker) %>%
-      summarize(mean_dist = mean(distance_to_nearest_hawker)) %>%
-      mutate(amenities_type = "Hawker Centre", mean_dist = round(mean_dist, 2)) %>% 
-      rename(amenities_name = nearest_hawker, amenities_dist = mean_dist)
-    
-    # For Nearest Mall
-    nearest_mall <- filtered_table() %>%
-      group_by(mall) %>%
-      summarize(mean_dist = mean(distance_to_nearest_mall)) %>%
-      mutate(amenities_type = "Shopping Mall", mean_dist = round(mean_dist, 2)) %>% 
-      rename(amenities_name = mall, amenities_dist = mean_dist)
-    
-    # For Nearest School
-    nearest_school <- filtered_table() %>%
-      group_by(school) %>%
-      summarize(mean_dist = mean(distance_to_nearest_school)) %>%
-      mutate(amenities_type = "School", mean_dist = round(mean_dist, 2)) %>% 
-      rename(amenities_name = school, amenities_dist = mean_dist)
-    
-    # Combine all results into one dataframe
-    all_amenities <- rbind(nearest_bus, nearest_mrt, nearest_hawker, nearest_mall, nearest_school)
-    
-    # Return top amenities
-    all_amenities %>% group_by(amenities_type) %>%
-      slice_min(order_by = amenities_dist, n = 1)
-  })
-  
-  # Render datatable
-  output$nearest_amenities_table <- renderDT({
-    top_amenities() %>%
-      rename("Amenity Type" = amenities_type,
-             "Amenity Name" = amenities_name,
-             "Dist To Amenity (m)" = amenities_dist) %>%
-      select("Amenity Type", everything())
-  }, options = list(dom = 't',  searching = FALSE))
-  
   
   ### 5. About Tab ###
   
@@ -1749,8 +1745,6 @@ server <- function(input, output, session) {
          height = 330,
          preserveAspectRatio = TRUE)
   }, deleteFile = F)
-  
-  
 }
 
 shinyApp(ui = ui, server = server)
