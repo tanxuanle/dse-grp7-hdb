@@ -7,7 +7,7 @@ Our web application serves as a comprehensive resource for all prospective buyer
 
 ## How can you access our RShiny Application?
 **1. Download the data files**
-* Visit our Google Drive to access all data files required for our application. (recommended)
+* Visit our Google Drive to access all data files required for our application.
 https://drive.google.com/drive/folders/1rVIPNjGgv1XRqYiTPv0tMLv75ieVhhzr?usp=sharing
 
 Note: Most data files are uploaded in /data except for model_bagging_9.rds and resale_prices.csv.
@@ -15,7 +15,7 @@ Note: Most data files are uploaded in /data except for model_bagging_9.rds and r
 **2. Access our application code file under /frontend in the main branch.**
 * Download the code file and save it in the same directory as the data files.
 
-**3. Running the application on your local system using RStudio.**
+**3. Run the application on your local system using RStudio.**
 * Ensure that you have the required packages installed.
 The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, leaflet, RColorBrewer, stringr, DT, bslib, shinythemes, fastDummies, ipred.
 
