@@ -24,6 +24,7 @@ The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, le
 
 ## Data Sources:
 1. Resale HDB data: data.gov.sg <br>
+https://beta.data.gov.sg/collections/189/datasets/d_ebc5ab87086db484f88045b47411ebc5/view
 Data wrangling is conducted to obtain the summarised dataset ("resale_prices.csv") for HDB Resale data from 2010 to 2024.
 
 2. Master Plan 2019 Subzone Boundary (No Sea): data.gov.sg <br>
@@ -54,7 +55,7 @@ https://beta.data.gov.sg/collections/1491/datasets/d_e7289d9a50e45bf1174590e184e
 https://en.wikipedia.org/wiki/List_of_bus_routes_in_Singapore
 
 11. MRT and LRT: mrtmapsingapore.com <br> 
-MRT: https://mrtmapsingapore.com/mrt-stations-singapore/ 
+MRT: https://mrtmapsingapore.com/mrt-stations-singapore/ <br> 
 LRT:  https://mrtmapsingapore.com/lrt-stations/ 
 
 
