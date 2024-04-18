@@ -1,0 +1,1757 @@
+
+############################## READING DATA ###################################
+
+model_bagging <- readRDS("model_bagging_9.rds")
+
+resale_prices <- read.csv("resale_prices.csv") %>% filter(year >= 2010 & year != 2024)
+
+town_boundaries <- st_read("MasterPlan2019SubzoneBoundaryNoSeaGEOJSON.geojson")
+population <- read.csv('HDBResidentPopulationbyGeographicalDistribution.csv')
+population_age <- read.csv('AgeofHDBResidentPopulationbyGeographicalDistribution.csv')
+mrt_lrt <- read.csv("mrt_lrt.csv")
+malls <- read.csv("malls.csv")
+hawkers <- read.csv("hawkers.csv")
+schools <- read.csv("schs.csv") %>% mutate(school_name = str_to_title(school_name))
+land_value <- read.csv("land_value_analysis.csv") 
+balas <- read.csv("balas.csv")
+
+########################## MAP DATA AND HANDLING ###############################
+
+mrt_lrt <- mrt_lrt %>% mutate(Name = str_to_title(Name))
+
+# Extract sub zone
+town_boundaries$sub_zone <- str_to_lower(sub('.*<th>SUBZONE_N</th>\\s*<td>(.*?)</td>.*', '\\1', town_boundaries$Description, perl=TRUE))
+
+# Extract planning area
+town_boundaries$planning_area <- str_to_lower(sub('.*<th>PLN_AREA_N</th>\\s*<td>(.*?)</td>.*', '\\1', town_boundaries$Description, perl=TRUE))
+
+# Extract region
+town_boundaries$region <- str_to_lower(sub('.*<th>REGION_N</th>\\s*<td>(.*?)</td>.*', '\\1', town_boundaries$Description, perl=TRUE))
+
+# Define the URL template for the OneMap tiles
+url <- "https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png"
+
+################# POPULATION DATASET AND HANDLING ##############################
+
+# selecting year 2013 and 2018 data from population dataset
+population1 <- population %>%
+  filter(shs_year %in% c(2013, 2018)) %>%
+  mutate(town_estate = case_when(town_estate == "Kallang Whampoa" ~ "Kallang/Whampoa",
+                                 town_estate == "Jurong_west" ~ "Jurong West",
+                                 TRUE ~ town_estate))
+
+# combining the two data sets
+demographic <- left_join(population1, population_age, by = c("shs_year", "town_estate"))
+
+demographic <- demographic %>%
+  group_by(town_estate, shs_year) %>%
+  mutate(popbyage = floor(number * percentage/100)) %>%
+  filter(shs_year == 2018) %>%
+  mutate(town_estate = tolower(town_estate))
+
+################################################################################
+### Storey Range Handling ###
+
+resale_prices <- resale_prices %>%
+  mutate(storey_range = case_when(storey_range == "01 To 05" ~ "01 To 03",
+                                  storey_range == "06 To 10" ~ "07 To 09",
+                                  storey_range == "11 To 15" ~ "13 To 15",
+                                  storey_range == "16 To 20" ~ "16 To 18",
+                                  storey_range == "21 To 25" ~ "22 To 24", 
+                                  storey_range == "26 To 30" ~ "28 To 30",
+                                  storey_range == "31 To 35" ~ "31 To 33", 
+                                  storey_range == "36 To 40" ~ "37 To 39",
+                                  TRUE ~ storey_range))
+
+### Land Value Analysis ###
+land_value <- land_value %>% mutate(town = tolower(town))
+
+################################################################################
+################################################################################
+
+# Define UI for application
+thematic::thematic_shiny(font = "auto")
+theme_set(theme_bw(base_size = 16))
+
+ui <- page_navbar(
+  theme = bs_theme(preset = "flatly"),
+  title = "HDB Resale Prices",
+  fillable = "Town Summary",
+  nav_panel(icon = bsicons::bs_icon("buildings"),
+            title = "Town Summary",
+            page_sidebar(
+              # title = "Town Summary",
+              sidebar = sidebar(
+                selectInput("town3", "Select Town:", choices = sort(unique(resale_prices$town))),
+                selectizeInput("street3", "Enter Street Name:", choices = NULL, options = list(
+                  placeholder = 'Name of Street',
+                  search_contains = TRUE
+                )),
+                selectInput("year3", "Select Year:", choices = c(sort(unique(resale_prices$year)), "All"), selected = "All")
+              ),
+              layout_columns(
+                height = "230vh",
+                col_widths = c(12,12, 12),
+                row_heights = c(2,4,4),
+                layout_columns(
+                  col_widths = c(4,4,4),
+                  value_box(
+                    title = "Average Square Metres",
+                    value = textOutput("avg_sqm"),
+                    theme = "text-warning",
+                    showcase = bsicons::bs_icon("rulers"), showcase_layout = "left center"
+                  ),
+                  value_box(
+                    title = "Median Resale Price", 
+                    value = textOutput("avg_resale_price"),
+                    theme = "text-info",
+                    showcase = bsicons::bs_icon("currency-dollar"), showcase_layout = "left center",
+                    full_screen = FALSE, fill = TRUE, height = NULL
+                  ), 
+                  value_box(
+                    title = "Number of Transactions", 
+                    value = textOutput("num_tran"),
+                    theme = "text-success",
+                    showcase = bsicons::bs_icon("graph-up"), showcase_layout = "left center",
+                    full_screen = FALSE, fill = TRUE, height = NULL
+                  ), 
+                ),
+                layout_columns(
+                  col_widths = c(6, 3, 3),
+                  card(
+                    full_screen = TRUE,
+                    card_header("Median Resale Price Across Time"),
+                    card_body(plotlyOutput("median_price_line"), height = "100%")
+                  ), 
+                  card(
+                    height = 250,
+                    full_screen = TRUE,
+                    card_header("Flat Types"),
+                    card_body(plotlyOutput("flat_type_pie"), height = "100%")
+                  ),
+                  card(
+                    height = 250,
+                    #full_screen = TRUE,
+                    card_header("Storey Range"),
+                    card_body(plotlyOutput("storey_range_pie"), height = "100%")
+                  )
+                ), layout_columns(
+                  col_widths = c(6,6),
+                  card(
+                    full_screen = TRUE,
+                    card_header("Population Demographic of Different Age Groups"),
+                    card_body(plotlyOutput("demographics_bar"), height = "100%")
+                  ), 
+                  card(
+                    full_screen = TRUE,
+                    card_header("Nearby amenities"),
+                    card_body(DTOutput("nearest_amenities_table"), height = "100%")
+                  )
+                )
+              )
+            )
+  ),
+  nav_menu(icon = bsicons::bs_icon("calculator"), "Calculators",
+           nav_panel(
+             title = "Resale Price Prediction",
+             page_sidebar(
+               # title = "Resale Price Prediction",
+               sidebar = sidebar(
+                 selectInput("town4", "Select Town", c(sort(unique(resale_prices$town)))),
+                 selectInput("street4", "Select Street:", choices = c(sort(unique(resale_prices$street_name)))),
+                 selectInput("block4", "Select Block:", choices = c(sort(unique(resale_prices$block)))),
+                 selectInput("flat_type4", "Select Flat Type", 
+                             choices = sort(unique(resale_prices$flat_type))),
+                 numericInput("floor_area4", "Select Floor Area:", min = 0, value = NULL),
+                 selectInput("flat_model4", "Select Flat Model:", choices = c(sort(unique(resale_prices$flat_model)))),
+                 actionButton("calculate_button", "Calculate")
+               ), 
+               layout_columns(
+                 height = "100vh",
+                 col_widths = c(4, 8, 12, 12),  # Adjust the widths of the columns as needed
+                 row_heights = c(1,2,1),
+                 value_box(
+                   title = "Resale Price",
+                   textOutput("resale_price_prediction"),
+                   showcase = bsicons::bs_icon("currency-dollar"),
+                   theme = "success", 
+                   iconPlacement = "left"
+                 ),
+                 card(
+                   #full_screen = TRUE,
+                   card_header("Recent Transactions"),
+                   DTOutput("past_transactions_table")
+                   
+                 ),
+                 card(
+                   #full_screen = TRUE,
+                   card_header("Leaflet Map"),
+                   leafletOutput("leaflet_map")
+                 ),
+                 card(
+                   card_header("Land Value Analysis"),
+                   card_body(
+                     class = "d-flex justify-content-center align-items-center",
+                     h5(class = "card-title", uiOutput("analysis"))
+                   ),
+                   class = "card bg-secondary",
+                   
+                 )
+               )
+             )
+           ),
+           nav_panel("Downsizing v.s. Lease Buyback Scheme",
+                     layout_columns(
+                       # height = "100vh",
+                       col_widths = c(6,6),
+                       card(
+                         max_height = 800,
+                         full_screen = TRUE, 
+                         card_header(class = "bg-dark",
+                                     "Downsizing"),
+                         card(
+                           max_height = 420,
+                           card_header("Flat Details"),
+                           layout_column_wrap(
+                             width = 1/2,
+                             card_body(
+                               "Current Flat", 
+                               selectInput("town_downsizing1", "Town:", choices = c("", sort(unique(resale_prices$town))), selected = NULL),
+                               selectInput("street_downsizing1", "Street:", choices = c("", sort(unique(resale_prices$street_name))), selected = NULL),
+                               selectInput("block_downsizing1", "Block:", choices = c("", sort(unique(resale_prices$block))), selected = NULL),
+                               selectInput("flat_type_downsizing1", "Flat Type:", choices = c("", sort(unique(resale_prices$flat_type))), selected = NULL),
+                               numericInput("floor_area_downsizing1", "Floor Area:", min = 0, value = NULL),
+                               selectInput("flat_model_downsizing1", "Flat Model:", choices = c("", sort(unique(resale_prices$flat_model))), selected = NULL),
+                               
+                               actionButton("calculate_downsizing1", "Calculate")
+                               
+                             ),
+                             card_body(
+                               "New Resale Flat", 
+                               selectInput("town_downsizing2", "Town:", choices = c("", sort(unique(resale_prices$town))), selected = NULL),
+                               selectInput("street_downsizing2", "Street:", choices = c("", sort(unique(resale_prices$street_name))), selected = NULL),
+                               selectInput("block_downsizing2", "Block:", choices = c("", sort(unique(resale_prices$block))), selected = NULL),
+                               selectInput("flat_type_downsizing2", "Flat Type:", choices = c("", sort(unique(resale_prices$flat_type))), selected = NULL),
+                               numericInput("floor_area_downsizing2", "Floor Area:", min = 0, value = NULL),
+                               selectInput("flat_model_downsizing2", "Flat Model:", choices = c("", sort(unique(resale_prices$flat_model))), selected = NULL),
+                               
+                               actionButton("calculate_downsizing2", "Calculate")
+                             )
+                           )
+                         ),
+                         
+                         layout_column_wrap(
+                           value_box(
+                             title = "Resale Price of Current Flat",
+                             textOutput("current_price_pred"),
+                             theme = "text-blue",
+                             showcase = bsicons::bs_icon("house")),
+                           
+                           value_box(
+                             title = "Resale Price of New Flat",
+                             textOutput("new_price_pred"),
+                             theme = "text-blue",
+                             showcase = bsicons::bs_icon("house")),
+                           
+                           value_box(
+                             title = "Downsizing Savings",
+                             textOutput("downsize_savings"),
+                             theme = "blue",
+                             class = "text-light",
+                             showcase = bsicons::bs_icon("currency-dollar")
+                           )
+                         ),
+                         markdown("** Current flat details are filled for both Downsizing and LBS Calculator."),
+                         markdown("If you have chosen to downsize to a 3-room flat, you may be eligible for an additional $30,000 cash bonus under the SHB.")
+                       ),
+                       
+                       card(
+                         max_height = 740,
+                         full_screen = TRUE,
+                         card_header("Lease Buyback Scheme", class = "bg-success"),
+                         
+                         # Nested card for Owner and Flat Details
+                         card(
+                           max_height = 420,
+                           card_header("Owner and Flat Details"),
+                           
+                           # Radio buttons for number of owners
+                           radioButtons("owners", "Number of Owners:", choices = c("1", "2"), inline = TRUE),
+                           
+                           fluidRow(
+                             column(6,
+                                    column(12, selectInput("age_owner1", "Age of Owner 1:", choices = c("", as.character(seq(65, 120))), selected = NULL)),
+                                    column(12, value_box(title = "Top-up Requirement for Owner 1",
+                                                         textOutput("top_up_owner1"),
+                                                         theme = "text-green"))
+                             ),
+                             
+                             column(6,
+                                    conditionalPanel(
+                                      condition = "input.owners == '2'",
+                                      column(12, selectInput("age_owner2", "Age of Owner 2:", choices = c("", as.character(seq(65, 120))), selected = NULL)),
+                                      column(12, value_box(title = "Top-up Requirement for Owner 2",
+                                                           textOutput("top_up_owner2"),
+                                                           theme = "text-green"))
+                                    )
+                             )
+                           ),
+                           
+                           fluidRow(
+                             column(6, selectInput("lease_balance", "Balance Lease:", choices = c("", as.character(seq(15, 99))), selected = NULL)),
+                             column(6, selectInput("lease_retained", "Lease to Retain:", choices = c("", "15", "20", "25", "30", "35"), selected = NULL))
+                           ),
+                           
+                           fluidRow(
+                             column(6, textOutput("difference_message")),
+                             column(6, numericInput("intended_top_up", "Total Intended Top-Up Amount:", min = 0, value = NULL))
+                           )
+                         ),
+                         
+                         # Row for value boxes displaying results
+                         layout_column_wrap(
+                           value_box(title = "Value of Lease to be Sold",
+                                     textOutput("value_of_lease"),
+                                     showcase = bsicons::bs_icon("house"),
+                                     theme = "text-green"),
+                           value_box(title = "LBS Cash Bonus",
+                                     textOutput("lbs_bonus"),
+                                     showcase = bsicons::bs_icon("coin"),
+                                     theme = "text-green"),
+                           value_box(title = "Total Cash Proceeds",
+                                     textOutput("lbs_total"),
+                                     showcase = bsicons::bs_icon("bank2"),
+                                     theme = "success",
+                                     class = "text-light")
+                         ),
+                         
+                         markdown("** Total Cash Proceeds refer to the amount of cash left after top-up and the LBS bonus received.")
+                       )
+                     )
+           )
+  ),
+  
+  ### Tab 3: Interactive Map ###
+  
+  tabPanel(icon = bsicons::bs_icon("map"), "Interactive Map",
+           nav_panel(
+             title = "Interactive Map",
+             page_sidebar(
+               # title = "Interactive Map",
+               sidebar = sidebar(
+                 sliderInput("year2", "Select Year", min = min(resale_prices$year), max = max(resale_prices$year), value = 2023, step = 1, sep = ""),
+                 selectInput("town2", "Select Town", c("All", sort(unique(resale_prices$town)))),
+                 selectInput("flat_type2", "Select Flat Type", c("All", sort(unique(resale_prices$flat_type))), selected = "4 Room"),
+                 radioButtons(
+                   "variable", "Choose Variable to Display:",
+                   choices = c("Median Price per Sqm" = "median_price_sqm",
+                               "Average Remaining Lease" = "avg_remaining_lease",
+                               "Affordability Ratio" = "affordability_ratio"),  # New choice
+                   selected = "median_price_sqm"
+                 )
+               ),layout_columns(
+                 height = "90vh",
+                 col_widths = c(12,6,6),  # Adjust the widths of the columns as needed
+                 row_heights = c(3, 1),
+                 card(
+                   full_screen = TRUE,
+                   card_header("Choropleth Map"),
+                   plotlyOutput("choropleth_map")
+                 ), 
+                 card(
+                   card_body(
+                     class = "d-flex justify-content-center align-items-center",
+                     uiOutput("subtitle_1")
+                   ),
+                   class = "card bg-light",
+                   style = "font-size: 22px;"
+                 ),
+                 card(
+                   card_body(
+                     class = "d-flex justify-content-center align-items-center",
+                     uiOutput("subtitle_2")
+                   ),
+                   class = "card bg-light",
+                   style = "font-size: 22px;"
+                 )
+               )
+               
+             )
+           ) 
+  ),
+  
+  ### Tab 4: Explore ###
+  
+  nav_menu(icon = bsicons::bs_icon("bar-chart-line"), "Explore",
+           nav_panel(
+             title = "Change in Median Resale Prices Across The Years",
+             page_sidebar(
+               # title = "Change in Median Resale Prices Across The Years",
+               sidebar = sidebar(
+                 selectInput("flat_type1_1", "Select Flat Type:", choices = c("All", sort(unique(resale_prices$flat_type))),
+                             selected = "All"),
+                 selectInput("firstyear1_1", "Select First Year:",
+                             choices = unique(resale_prices$year[resale_prices$year != 2024]), selected = 2022),
+                 selectInput("secondyear1_1", "Select Second Year:",
+                             choices = unique(resale_prices$year[resale_prices$year != 2024]), selected = 2023)
+               ),
+               layout_columns(
+                 height = "100vh",
+                 card(
+                   full_screen = TRUE,
+                   card_header("Lollipop Chart"),
+                   plotlyOutput("lollipop_plot")
+                 )
+               )
+             )),
+           nav_panel(
+             title = "Resale Price and Distance to CBD",
+             page_sidebar(
+               # title = "Resale Price and Distance to CBD",
+               sidebar = sidebar(
+                 sliderInput("year1_2", "Select Year", min = min(resale_prices$year), max = max(resale_prices$year), value = 2023, step = 1, sep = ""),
+                 checkboxGroupInput("region1_2", "Select Region", 
+                                    choices = sort(unique(resale_prices$region)), 
+                                    selected = sort(unique(resale_prices$region))),  # All regions selected by default
+                 selectInput("flat_type1_2", "Select Flat Type", 
+                             choices = c("All", sort(unique(resale_prices$flat_type))), 
+                             selected = "4 Room")
+               ),
+               layout_columns(
+                 height = "100vh",
+                 card(
+                   full_screen = TRUE,
+                   card_header("Scatterplot"),
+                   plotlyOutput("scatter_plot")
+                 )
+               )
+             )
+           ),
+           
+           nav_panel(
+             title = "Distance to Hawker Centres and Malls",
+             page_sidebar(
+               # title = "Distance to Hawker Centres and Malls",
+               sidebar = sidebar(
+                 sliderInput("year1_3", "Select Year", min = min(resale_prices$year), max = max(resale_prices$year), value = 2023, step = 1, sep = ""),
+                 selectInput("town1_3", "Select Town", c(sort(unique(resale_prices$town)))),
+                 selectInput("flat_type1_3", "Select Flat Type", c(sort(unique(resale_prices$flat_type))), selected = "4 room")
+               ),
+               layout_columns(
+                 height = "100vh",
+                 card(
+                   full_screen = TRUE,
+                   card_header("Bubble Plot"),
+                   plotlyOutput("bubble_plot")
+                 )
+               )
+             )
+           ),
+           nav_panel(
+             title = "Flats In Different Towns",
+             page_sidebar(
+               # title = "Flats In Different Towns",
+               sidebar = sidebar(
+                 selectInput("town1_4", "Select Town:", choices = c("All", sort(unique(resale_prices$town)))),
+                 selectInput("flat_type1_4", "Select Flat Type:", choices = c("All", sort(unique(resale_prices$flat_type))), selected = "4 Room"),
+                 selectInput("year1_4", "Select Year:", choices = sort(unique(resale_prices$year)), selected = 2023),
+                 radioButtons("plot_type1_4", "Select Plot Type:",
+                              choices = c("Distribution of Flat Types", 
+                                          "Average Resale Price",
+                                          "Average Floor Area"),
+                              selected = "Distribution of Flat Types")
+               ),
+               layout_columns(
+                 height = "100vh",
+                 card(
+                   full_screen = TRUE,
+                   card_header("Bar Charts"),
+                   plotlyOutput("plot1_4")
+                 )
+               )
+             )
+           )
+  ), 
+  
+  ### Tab 5: About ###
+  
+  tabPanel(icon = bsicons::bs_icon("info-circle"), "About",
+           nav_panel(
+             title = "About",
+             imageOutput("aboutimg", height = "200px"),
+             br(),
+             hr(),
+             card(
+               fill = FALSE, 
+               h4(strong("Project Description")),
+               p(style = "text-align: justify; font-size: 14px",
+                 "This web application serves as a comprehensive resource for all prospective buyers of resale flats and elderly residents seeking financial solutions through downsizing or the ",
+                 tags$a(href = "https://www.hdb.gov.sg/residential/living-in-an-hdb-flat/for-our-seniors/monetising-your-flat-for-retirement/lease-buyback-scheme", "Lease Buyback Scheme"),
+                 " offered by the Housing & Development Board (HDB). 
+                  Whether you're navigating the resale market or exploring options to maximize savings, our platform offers essential guidance and tools to streamline your decision-making process. 
+                  From understanding resale flat dynamics to evaluating the benefits of downsizing or participating in the Lease Buyback Scheme, our one-stop hub empowers users with the knowledge and resources they need to make informed choices tailored to their housing and financial goals."
+               )
+             ),
+             
+             layout_column_wrap(
+               value_box(
+                 title = "Town Summary",
+                 showcase = bsicons::bs_icon("buildings"),
+                 p(style = "text-align: justify; font-size: 14px",
+                   "See everything about your town at a glance!")
+               ),
+               value_box(
+                 title = "Calculators",
+                 showcase = bsicons::bs_icon("calculator"),
+                 p(style = "text-align: justify; font-size: 14px",
+                   "Estimate the price of your flat and your possible savings with just a few clicks.")
+               ),
+               value_box(
+                 title = "Interactive Map", 
+                 showcase = bsicons::bs_icon("map"),
+                 p(style = "text-align: justify; font-size: 14px",
+                   "Explore resale flat prices and locations with our interactive map feature.")
+               ),
+               value_box(
+                 title = "Explore",
+                 showcase = bsicons::bs_icon("bar-chart-line"),
+                 p(style = "text-align: justify; font-size: 14px",
+                   "Discover trends and insights with our interactive visualizations.")
+               )
+             )
+           )
+  )
+)
+
+
+
+server <- function(input, output, session) {
+  
+  ### 1. "Explore" Tab ###
+  
+  # 1.1 Plotting the Lollipop Plot
+  
+  # Calculate median resale price by year
+  median_prices1_1 <- reactive({
+    filtered <- resale_prices
+    
+    if (input$flat_type1_1 != "All") {
+      filtered <- filtered %>%
+        filter(flat_type == input$flat_type1_1)
+    }
+    
+    filtered <- filtered %>%
+      filter(year %in% c(input$firstyear1_1, input$secondyear1_1))
+    
+    filtered <- filtered %>%
+      group_by(town, year) %>%
+      summarize(median_price = median(resale_price), .groups = "drop") %>%
+      arrange(year) %>%
+      mutate(year = as.factor(year))
+    
+    filtered
+  })
+  
+  
+  # Plot lollipop plot
+  output$lollipop_plot <- renderPlotly({
+    p <- ggplot(data = median_prices1_1(), aes(x = fct_rev(town), y = median_price, 
+                                               text = paste("Town: ", fct_rev(str_to_title(town)),
+                                                            "<br>Median Resale Price: $", scales::comma(median_price),
+                                                            "<br>Year: ", year))) + 
+      geom_line(aes(group = town), color = "grey", lwd = 2) +
+      geom_point(aes(color = year), size = 2.5) +
+      coord_flip() +
+      labs(title = "Median Resale Prices Across Towns",
+           x = "Median Resale Price (SGD)", 
+           y = "Town", color = "") +  # Set x-axis label here
+      scale_y_continuous(labels = scales::number_format(scale = 1))  # Set tick format here
+    
+    # Convert ggplot to plotly
+    ggplotly(p, tooltip = "text")
+  })
+  
+  
+  
+  # 1.2 Plotting the Scatter Plot
+  
+  filtered_data1_2 <- reactive({
+    resale_prices %>%
+      filter(year == input$year1_2) %>%
+      filter(if ("All" %in% input$region1_2) TRUE else region %in% input$region1_2) %>%
+      filter(if (input$flat_type1_2 == "All") TRUE else flat_type == input$flat_type1_2) %>% 
+      mutate(distance_to_cbd = round(distance_to_cbd/1000), 2)
+  })
+  # Render Median Resale Prices against No. of Transactions 
+  
+  output$scatter_plot <- renderPlotly({
+    # Calculate median resale prices and number of transactions by town
+    median_price_distance <- filtered_data1_2() %>% 
+      group_by(town, region) %>%
+      summarise(median_resale_price = median(resale_price, na.rm = TRUE),
+                dist_to_cbd = mean(distance_to_cbd, na.rm = TRUE))
+    
+    # Plot median resale prices against distance to CBD by town
+    p <- ggplot(median_price_distance, aes(x = dist_to_cbd, y = median_resale_price, color = town, 
+                                           text = paste("Town: ", str_to_title(town), 
+                                                        "<br>Median Resale Price: $", scales::comma(median_resale_price),
+                                                        "<br>Distance to CBD: ", round(dist_to_cbd, 2), " km"))) +
+      geom_point() +
+      geom_text(aes(label = str_to_title(town)), nudge_x = 0.5, nudge_y = 10000, size = 3) +  # Adjust nudge and size as needed
+      labs(title = "Median Resale Prices vs. Distance to CBD",
+           x = "Distance to CBD (km)", y = "Median Resale Price in SGD ($)",
+           caption = "Data source: Resale prices and distance to CBD by town") +
+      scale_color_discrete(guide = FALSE) +  # Remove legend for town names
+      scale_y_continuous(labels = scales::dollar_format(prefix = "$")) +  # Format y-axis labels to display full numbers
+      theme_minimal() +
+      theme(plot.title = element_text(size = 18, hjust = 0.5),  # Center-align the title
+            plot.caption = element_text(hjust = 0.5),  # Center-align the caption
+            axis.title = element_text(size = 14),  # Set the font size of axis titles
+            axis.text = element_text(size = 12))  # Set the font size of axis labels
+    
+    # Convert ggplot to plotly with tooltips
+    ggplotly(p, tooltip = "text")
+  })
+  
+  # 1.3. Filtering data for Bubble Plot (Dist to Hawkers VS. Dist to Malls)
+  
+  filtered_data1_3 <- reactive({
+    resale_prices %>%
+      filter(year == input$year1_3) %>%
+      filter(town == input$town1_3) %>% 
+      filter(if (input$flat_type1_3 != "All") flat_type == input$flat_type1_3 else TRUE) %>%
+      group_by(address) %>% slice(which.max(resale_price)) %>% 
+      mutate(distance_to_nearest_mall = distance_to_nearest_mall/1000, 
+             distance_to_nearest_hawker = distance_to_nearest_hawker/1000) 
+  })
+  
+  
+  output$bubble_plot <- renderPlotly({
+    # Generate the plot
+    p <- filtered_data1_3() %>% 
+      mutate(text = paste("Address: ", str_to_title(address), 
+                          "<br>Dist to Hawker: ", format(distance_to_nearest_hawker, digits = 2),
+                          "<br>Dist to Mall: ", format(distance_to_nearest_mall, digits = 2), 
+                          "<br>Resale Price: $", scales::comma(resale_price), sep = "")) %>%
+      ggplot(aes(x = distance_to_nearest_hawker, y = distance_to_nearest_mall, 
+                 colour = resale_price, text = text)) +
+      geom_point(alpha = 0.7, size = 5) +
+      labs(title = "Distance to Mall v.s. Distance to Hawker Centers",
+           x = "Distance to Hawker Centers (km)", y = "Distance to Malls (km)") +
+      scale_size(range = c(0.5, 10), name = "Resale Prices (in thousands)",
+                 labels = scales::dollar_format(prefix = "$")) +  # Format labels with commas
+      scale_color_viridis_c(option = "D", labels = scales::comma, direction = -1) +  # Use viridis color palette with darker option and format labels
+      theme_minimal()  # Use minimal theme as a base
+    
+    # Convert ggplot to plotly
+    ggplotly(p, tooltip = "text") %>%
+      layout(
+        title = "Distance to Mall v.s. Distance to Hawker Centers",
+        xaxis = list(title = "Distance to Hawker Centers (km)"),
+        yaxis = list(title = "Distance to Malls (km)"),
+        legend = list(title = "Resale Price ($)"),
+        font = list(family = "Arial"),  # Set font family
+        plot_bgcolor = "rgba(0,0,0,0)",  # Set plot background color
+        paper_bgcolor = "rgba(0,0,0,0)",  # Set paper background color
+        hoverlabel = list(bgcolor = "white", font = list(family = "Arial", size = 12))  # Set hover label background and font
+      )
+  })
+  
+  # 1.4. Plotting the Bar Graphs
+  
+  # Filtered data based on inputs
+  filtered_data1_4 <- reactive({
+    resale_prices %>%
+      filter(year == input$year1_4,
+             if (input$town1_4 != "All") town == input$town1_4 else TRUE &
+               if (input$flat_type1_4 != "All") flat_type == input$flat_type1_4 else TRUE)
+  })
+  
+  # Plot based on selected plot type
+  output$plot1_4 <- renderPlotly({
+    filtered_data <- filtered_data1_4()
+    
+    if (input$plot_type1_4 == "Distribution of Flat Types") {
+      # Stacked bar graph: Town VS Flat type
+      plot <- filtered_data %>%
+        group_by(town, flat_type) %>%
+        summarise(count = n(), .groups = "drop") %>%
+        plot_ly(x = ~count, y = ~town, color = ~flat_type, type = "bar", source = "graph1", height = 500) %>%
+        layout(title = "Distribution of Flat Types Across Towns", 
+               xaxis = list(title = "Count"), 
+               yaxis = list(title = "Town", categoryorder = "total ascending"),
+               barmode = "stack")
+    } 
+    else if (input$plot_type1_4 == "Average Resale Price") {
+      # Average resale price by town
+      plot <- filtered_data %>%
+        group_by(town) %>%
+        summarise(avg_resale_price = mean(resale_price)) %>%
+        plot_ly(x = ~avg_resale_price, y = ~town, type = "bar", source = "graph2", height = 500) %>%
+        layout(title = "Average Resale Price by Town", xaxis = list(title = "Average Resale Price (SGD)"), yaxis = list(title = "Town", categoryorder = "total ascending"))
+    } 
+    else if (input$plot_type1_4 == "Average Floor Area") {
+      # Average floor area by town
+      plot <- filtered_data %>%
+        group_by(town) %>%
+        summarise(avg_floor_area = mean(floor_area_sqm)) %>%
+        plot_ly(x = ~avg_floor_area, y = ~town, type = "bar", source = "graph3", height = 500) %>%
+        layout(title = "Average Floor Area by Town", xaxis = list(title = "Average Floor Area (sqm)"), yaxis = list(title = "Town", categoryorder = "total ascending"))
+    }
+    
+    plot
+  })
+  
+  # Reactive expression for filtered data
+  filtered_data2 <- reactive({
+    resale_prices %>%
+      filter(year == input$year2) %>%
+      filter(if (input$town2 != "All") town == input$town2 else TRUE) %>%
+      filter(if (input$flat_type2 != "All") flat_type == input$flat_type2 else TRUE) %>%
+      group_by(address) %>% group_by(town) %>%
+      summarise(median_price = median(resale_price, na.rm = TRUE),
+                median_price_sqm = median(resale_price / floor_area_sqm, na.rm = TRUE),
+                avg_remaining_lease = round(mean(remaining_lease, na.rm = TRUE), 0),
+                affordability_ratio = mean(affordability_ratio_CPF), # Calculate affordability ratio
+                longitude = first(longitude),
+                latitude = first(latitude),
+                .groups = 'drop') %>%
+      right_join(town_boundaries, by = c("town" = "planning_area")) %>%
+      mutate(geometry = sf::st_make_valid(geometry)) %>% 
+      sf::st_as_sf()
+  })
+  
+  
+  # Plotting the Chloropleth Map
+  
+  output$choropleth_map <- renderPlotly({
+    
+    # Render the Choropleth map based on the selected variable
+    p <- ggplot(data = filtered_data2()) +
+      geom_sf(aes(fill = !!sym(input$variable), 
+                  text = ifelse(!is.na(median_price), 
+                                paste("Town: ", str_to_title(town), "<br>",
+                                      "Median Price: $", format(median_price, digits = 2), "<br>",
+                                      "Median Price Per Sqm: $", format(median_price_sqm, digits = 2),"<br>",
+                                      "Average Remaining Lease: ", format(avg_remaining_lease, digits = 2),"<br>",
+                                      "Affordability Ratio: ", format(affordability_ratio, digits = 2)),
+                                "")),
+              colour = alpha("white", 0.1)) +
+      scale_fill_distiller(
+        name = switch(input$variable,
+                      "median_price_sqm" = "Median Resale Price per Sqm",
+                      "avg_remaining_lease" = "Average Remaining Lease",
+                      "affordability_ratio" = "Affordability Ratio"),
+        palette = switch(input$variable,
+                         "median_price_sqm" = "Blues",  # Blue palette for median resale price
+                         "avg_remaining_lease" = "Greens",  # Green palette for average remaining lease
+                         "affordability_ratio" = "YlOrRd"),  # Red palette for towns with ratio > 5, orange for the rest
+        na.value = "grey", 
+        trans = "reverse",
+        labels = function(x) {
+          if (input$variable == "avg_remaining_lease") {
+            scales::number_format(suffix = " years")(x)
+          } else if (input$variable == "affordability_ratio") {
+            scales::number_format(accuracy = 0.01)(x)
+          } else {
+            scales::dollar_format(prefix = "$")(x)
+          }
+        }
+      ) +  
+      labs(title = "Choropleth Map by Planning Area") +
+      theme_minimal()    
+    
+    # Convert ggplot to plotly
+    ggplotly(p, tooltip = "text")
+    
+  })
+  
+  filtered_data2_2 <- reactive({
+    resale_prices %>%
+      filter(year == input$year2) %>%
+      filter(if (input$flat_type2 != "All") flat_type == input$flat_type2 else TRUE) %>%
+      group_by(town) %>%
+      summarise(median_price = median(resale_price, na.rm = TRUE),
+                median_price_sqm = median(resale_price / floor_area_sqm, na.rm = TRUE),
+                avg_remaining_lease = round(mean(remaining_lease, na.rm = TRUE), 0),
+                affordability_ratio = mean(affordability_ratio_CPF)) # Calculate affordability ratio
+  })
+  
+  
+  output$subtitle_1 <- renderUI({
+    if (input$variable == "median_price_sqm") {
+      # Select the top 3 most expensive towns among the unique towns
+      top_expensive <- head(arrange(filtered_data2_2(), desc(median_price)), 3)
+      title <- "<strong>Top 3 Most Expensive Towns: </strong>"
+      formatted_towns <- paste(seq_along(str_to_title(top_expensive$town)), ". ", str_to_title(top_expensive$town), " - $", scales::comma(top_expensive$median_price), collapse = "<br>")
+    } else if (input$variable == "avg_remaining_lease") {
+      # Select the top 3 oldest towns among the unique towns
+      top_youngest <- head(arrange(filtered_data2_2(), avg_remaining_lease), 3)
+      title <- "<strong>Top 3 Oldest Towns: </strong>"
+      formatted_towns <- paste(str_to_title(seq_along(top_youngest$town)), ". ", str_to_title(top_youngest$town), " - ", format(99 - top_youngest$avg_remaining_lease, digits = 2), " years",collapse = "<br>")
+    } else if (input$variable == "affordability_ratio") {
+      # Select the top 3 most unaffordable towns among the unique towns
+      top_unaffordable <- head(arrange(filtered_data2_2(), desc(affordability_ratio)), 3)
+      title <- "<strong>Top 3 Least Affordable Towns: </strong>"
+      formatted_towns <- paste(str_to_title(seq_along(top_unaffordable$town)), ". ", str_to_title(top_unaffordable$town), " - ", format(top_unaffordable$affordability_ratio, digits = 2), collapse = "<br>")
+    } 
+    HTML(paste(title, formatted_towns))
+  })
+  
+  output$subtitle_2 <- renderUI({
+    if (input$variable == "median_price_sqm") {
+      # Select the top 3 least expensive towns among the unique towns
+      top_expensive <- head(arrange(filtered_data2_2(), median_price), 3)
+      title <- "<strong>Top 3 Least Expensive Towns: </strong>"
+      formatted_towns <- paste(seq_along(top_expensive$town), ". ", top_expensive$town, " - $", scales::comma(top_expensive$median_price), collapse = "<br>")
+    } else if (input$variable == "avg_remaining_lease") {
+      # Select the top 3 youngest towns among the unique towns
+      top_youngest <- head(arrange(filtered_data2_2(), desc(avg_remaining_lease)), 3)
+      title <- "<strong>Top 3 Youngest Towns: </strong>"
+      formatted_towns <- paste(seq_along(top_youngest$town), ". ", top_youngest$town, " - ", format(99 - top_youngest$avg_remaining_lease, digits = 2), " years",collapse = "<br>")
+    } else if (input$variable == "affordability_ratio") {
+      # Select the top 3 most unaffordable towns among the unique towns
+      top_unaffordable <- head(arrange(filtered_data2_2(), affordability_ratio), 3)
+      title <- "<strong>Top 3 Most Affordable Towns: </strong>"
+      formatted_towns <- paste(seq_along(top_unaffordable$town), ". ", top_unaffordable$town, " - ", format(top_unaffordable$affordability_ratio, digits = 2), collapse = "<br>")
+    } 
+    HTML(paste(title, str_to_title(formatted_towns)))
+  })
+  
+  ### 4. "Calculator" Tab ###
+  
+  # 4.1 Leaflet Map
+  
+  # Filtered data without summarizing
+  filtered_data4_1 <- reactive({
+    resale_prices %>%
+      filter(year == 2023) %>%
+      filter(town == input$town4) %>%
+      filter(if (input$flat_type4 != "All") flat_type == input$flat_type4 else TRUE) %>%
+      group_by(address) %>% 
+      slice(which.max(resale_price))
+  })
+  
+  mallIcon <- makeIcon(
+    iconUrl = "https://github.com/liewxinyu2/DSE3101_project/blob/main/icon/icons8-shopping-mall-50.png?raw=true",
+    iconWidth = 16, iconHeight = 16,
+    iconAnchorX = 8, iconAnchorY = 8
+  )
+  
+  hawkerIcon <- makeIcon(
+    iconUrl = "https://uxwing.com/wp-content/themes/uxwing/download/food-and-drinks/food-court-icon.png",
+    iconWidth = 16, iconHeight = 16,
+    iconAnchorX = 8, iconAnchorY = 8
+  )
+  
+  schoolIcon <- makeIcon(
+    iconUrl = "https://uxwing.com/wp-content/themes/uxwing/download/education-school/graduation-cap-icon.png",
+    iconWidth = 16, iconHeight = 16,
+    iconAnchorX = 8, iconAnchorY = 8
+  )
+  
+  # Plotting the Leaflet Map
+  output$leaflet_map <- renderLeaflet({
+    
+    # Calculate the center of the selected town
+    center_lon <- mean(filtered_data4_1()$longitude)
+    center_lat <- mean(filtered_data4_1()$latitude)
+    
+    leaflet() %>%
+      setView(lng = center_lon, lat = center_lat, zoom = 16) %>%
+      addTiles(urlTemplate = url, options = providerTileOptions(maxZoom = 19, minZoom = 11)) %>%
+      addCircleMarkers(data = filtered_data4_1(), 
+                       lng = ~longitude, lat = ~latitude,
+                       popup = ~paste("Address:", str_to_title(address), "<br>",
+                                      "Resale Price: $", resale_price),
+                       radius = 7,  # Adjust the size of the points
+                       fillOpacity= 1,
+                       color = ~resale_price,  # Set color gradient based on resale price
+                       fillColor = ~colorNumeric(palette = "YlOrRd", domain = filtered_data4_1()$resale_price)(resale_price)
+      ) %>%
+      addMarkers(data = malls, 
+                 lng = ~longitude, lat = ~latitude, icon = mallIcon,
+                 popup = ~paste("Shopping Mall: ", mall)) %>%
+      addMarkers(data = hawkers, 
+                 lng = ~longitude, lat = ~latitude, icon = hawkerIcon,
+                 popup = ~paste("Hawker Centre: ", name_of_hawker_centre)) %>%
+      addMarkers(data = schools, 
+                 lng = ~longitude, lat = ~latitude, icon = schoolIcon,
+                 popup = ~paste("School: ", school_name)) %>%
+      addControl(html = "<div style='background-color: white; border: 1px solid black; padding: 5px;'>
+                     <b>Legend</b><br>
+                     <img src='https://github.com/liewxinyu2/DSE3101_project/blob/main/icon/icons8-shopping-mall-50.png?raw=true' style='width: 16px; height: 16px;'> Shopping Malls<br>
+                     <img src='https://uxwing.com/wp-content/themes/uxwing/download/food-and-drinks/food-court-icon.png' style='width: 16px; height: 16px;'> Hawker Centres<br>
+                     <img src='https://uxwing.com/wp-content/themes/uxwing/download/education-school/graduation-cap-icon.png' style='width: 16px; height: 16px;'> Schools
+                   </div>",
+                 position = "bottomright")
+    
+    
+  })
+  
+  
+  # Reactive expression for filtered data
+  filtered_data4_2 <- reactive({
+    resale_prices %>%
+      filter(town == input$town4 ) %>%
+      filter(street_name == input$street4) %>%
+      filter(flat_type == input$flat_type4) %>% 
+      filter(year %in% c(2023)) %>% select(
+        street_name, resale_price, month, year
+      ) %>% mutate(street_name = str_to_title(street_name))
+  })  
+  
+  # Render past transactions table
+  output$past_transactions_table <- renderDT({
+    datatable(filtered_data4_2(), options = list(
+      columnDefs = list(list(width = '25%', targets = "_all"))  # Set column width to fill across horizontally
+    ), 
+    colnames = c("Street Name", "Resale Price", "Month", "Year"))  # Rename columns
+  })
+  
+  ## Land Value Analysis Textbox 
+  
+  filtered_land_value <- reactive({
+    land_value %>%
+      filter(town == input$town4)
+  })
+  
+  output$analysis <- renderUI({
+    HTML(paste(filtered_land_value()$analysis))
+  })
+  
+  ## Prediction model Input filters ##
+  
+  # Reactive expression for filtered data
+  filtered_data_town <- reactive({
+    req(input$town4)  # Require town to be selected
+    filter(resale_prices, town == input$town4)
+  })
+  
+  # Filtered data based on selected town and street
+  filtered_data_street <- reactive({
+    req(input$town4, input$street4)  # Require town and street to be selected
+    filter(filtered_data_town(), street_name == input$street4)
+  })
+  
+  # Filtered data based on selected town, street, and block
+  filtered_data_block <- reactive({
+    req(input$town4, input$street4, input$block4)  # Require town, street, and block to be selected
+    filter(filtered_data_street(), block == input$block4)
+  })
+  
+  # Update select input options for street based on selected town
+  observeEvent(input$town4, {
+    updateSelectInput(session, "street4", choices = c(sort(unique(filtered_data_town()$street_name))))
+  })
+  
+  # Update select input options for block based on selected town and street
+  observeEvent(c(input$town4, input$street4), {
+    updateSelectInput(session, "block4", choices = c(sort(unique(filtered_data_street()$block))))
+  })
+  
+  # Update select input options for flat type based on selected town, street, and block
+  observeEvent(c(input$town4, input$street4, input$block4), {
+    updateSelectInput(session, "flat_type4", choices = c(sort(unique(filtered_data_block()$flat_type))))
+  })
+  
+  # Update select input options for flat model based on selected town, street, and block
+  observeEvent(c(input$town4, input$street4, input$block4), {
+    updateSelectInput(session, "flat_model4", choices = c(sort(unique(filtered_data_block()$flat_model))))
+  })
+  
+  
+  ## Calculate and render resale price prediction ##
+  output$resale_price_prediction <- renderText({
+    req(input$calculate_button)
+    
+    to_pred= resale_prices %>%
+      select(street_name, block, resale_price, year, month, town, flat_type, storey_range, floor_area_sqm, flat_model, remaining_lease,
+             max_floor_lvl, multistorey_carpark, precinct_pavilion, region, nearest_bus_distance, bus_within_2km,
+             nearest_park_distance, parks_within_2km, distance_to_nearest_hawker, hawkers_within_2km,
+             distance_to_nearest_healthcare, healthcare_within_2km, distance_to_nearest_mall,
+             malls_within_2km, distance_to_nearest_school, schools_within_2km,
+             distance_to_nearest_supermarket, supermarkets_within_2km,
+             nearest_mrt_lrt_distance, mrt_lrt_within_2km, distance_to_cbd) %>%
+      drop_na() %>%
+      filter(year>=2010 & year<2024) %>%
+      mutate(flat_type2=flat_type) %>%
+      mutate_at(vars(town, month, flat_type, flat_model, storey_range, multistorey_carpark, precinct_pavilion), as.factor) %>%
+      mutate(id=row_number()) %>%
+      mutate(remaining_lease=remaining_lease - (2024-as.numeric(as.character(year))))
+    to_pred2=fastDummies::dummy_cols(to_pred, select_columns=c("town", "storey_range", "flat_type", "multistorey_carpark", "flat_model", "precinct_pavilion"), remove_first_dummy=TRUE, remove_selected_columns=TRUE)
+    colnames(to_pred2)=gsub(" ","_",colnames(to_pred2))
+    colnames(to_pred2)=gsub("/","_",colnames(to_pred2))
+    colnames(to_pred2)=gsub("-","_",colnames(to_pred2))
+    to_pred2= to_pred2 %>%
+      filter(street_name==tolower(input$street4) & block==input$block4 & flat_type2==tolower(input$flat_type4)) %>%
+      slice_tail(n=1) %>%
+      mutate(year_2011=0, year_2012=0, year_2013=0, year_2014=0, year_2015=0, year_2016=0, year_2017=0, year_2018=0, year_2019=0, year_2020=0, year_2021=0, year_2022=0, year_2023=1) %>%
+      mutate(month_2=0, month_3=0, month_4=0, month_5=0, month_6=0, month_7=0, month_8=0, month_9=0, month_10=0, month_11=0, month_12=0) %>%
+      mutate(floor_area_sqm=as.numeric(input$floor_area4)) %>%
+      mutate(`flat_type_2_room`= case_when(tolower(input$flat_type4)=="2 room" ~ 1,
+                                           .default = 0),
+             `flat_type_3_room`= case_when(tolower(input$flat_type4)=="3 room" ~ 1,
+                                           .default = 0),
+             `flat_type_4_room`= case_when(tolower(input$flat_type4)=="4 room" ~ 1,
+                                           .default = 0),
+             `flat_type_5_room`= case_when(tolower(input$flat_type4)=="5 room" ~ 1,
+                                           .default = 0),
+             `flat_type_executive`= case_when(tolower(input$flat_type4)=="executive" ~ 1,
+                                              .default = 0),
+             `flat_type_multi_generation`= case_when(tolower(input$flat_type4)=="multi generation" ~ 1,
+                                                     .default = 0)) %>%
+      mutate(`flat_model_new_generation`= case_when(tolower(input$flat_model4)=="new generation"  ~ 1,
+                                                    .default = 0),
+             `flat_model_improved`= case_when(tolower(input$flat_model4)=="improved" ~ 1,
+                                              .default = 0),
+             `flat_model_model_a`= case_when(tolower(input$flat_model4)=="model a" ~ 1,
+                                             .default = 0),
+             `flat_model_standard`= case_when(tolower(input$flat_model4)=="standard" ~ 1,
+                                              .default = 0),
+             `flat_model_simplified`= case_when(tolower(input$flat_model4)=="simplified" ~ 1,
+                                                .default = 0),
+             `flat_model_model_a_maisonette`= case_when(tolower(input$flat_model4)=="model a-maisonette" ~ 1,
+                                                        .default = 0),
+             `flat_model_apartment`= case_when(tolower(input$flat_model4)=="apartment" ~ 1,
+                                               .default = 0),
+             `flat_model_maisonette`= case_when(tolower(input$flat_model4)=="maisonette" ~ 1,
+                                                .default = 0),
+             `flat_model_terrace`= case_when(tolower(input$flat_model4)=="terrace" ~ 1,
+                                             .default = 0),
+             #`flat_type_executive`= case_when(tolower(input$flat_model4)=="2-room" ~ 1,
+             #.default = 0),
+             `flat_model_improved_maisonette`= case_when(tolower(input$flat_model4)=="improved-maisonette" ~ 1,
+                                                         .default = 0),
+             `flat_model_multi_generation`= case_when(tolower(input$flat_model4)=="multi generation" ~ 1,
+                                                      .default = 0),
+             `flat_model_premium_apartment`= case_when(tolower(input$flat_model4)=="premium apartment" ~ 1,
+                                                       .default = 0),
+             `flat_model_adjoined_flat`= case_when(tolower(input$flat_model4)=="adjoined flat" ~ 1,
+                                                   .default = 0),
+             `flat_model_premium_maisonette`= case_when(tolower(input$flat_model4)=="premium maisonette" ~ 1,
+                                                        .default = 0),
+             `flat_model_model_a2`= case_when(tolower(input$flat_model4)=="model a2" ~ 1,
+                                              .default = 0),
+             `flat_model_dbss`= case_when(tolower(input$flat_model4)=="dbss" ~ 1,
+                                          .default = 0),
+             `flat_model_type_s1`= case_when(tolower(input$flat_model4)=="type s1" ~ 1,
+                                             .default = 0),
+             `flat_model_type_s2`= case_when(tolower(input$flat_model4)=="type s2" ~ 1,
+                                             .default = 0),
+             `flat_model_premium_apartment_loft`= case_when(tolower(input$flat_model4)=="premium apartment loft" ~ 1,
+                                                            .default = 0),
+             `flat_model_3gen`= case_when(tolower(input$flat_model4)=="3gen" ~ 1,
+                                          .default = 0)) %>%
+      select(-c("street_name","block", "year","month","resale_price","id","flat_type2","region"))
+    
+    # Make prediction using your bagging model (replace `model_bagging` with your model object)
+    prediction <- round(exp(predict(model_bagging, newdata = to_pred2)[1]), 0)
+    
+    paste(prediction)
+  })
+  
+  
+  ## Land Value Analysis Textbox 
+  
+  filtered_land_value <- reactive({
+    land_value %>%
+      filter(town == input$town4)
+  })
+  
+  output$analysis <- renderUI({
+    HTML(paste(filtered_land_value()$analysis))
+  })
+  
+  
+  ### Downsizing  ###
+  
+  ## Current Flat Price Prediction ##
+  
+  ## Prediction model Input filters ##
+  # Reactive expression for filtered data
+  filtered_data_town_ds1 <- reactive({
+    req(input$town_downsizing1)  # Require town to be selected
+    filter(resale_prices, town == input$town_downsizing1)
+  })
+  
+  # Filtered data based on selected town and street
+  filtered_data_street_ds1 <- reactive({
+    req(input$town_downsizing1, input$street_downsizing1)  # Require town and street to be selected
+    filter(filtered_data_town_ds1(), street_name == input$street_downsizing1)
+  })
+  
+  # Filtered data based on selected town, street, and block
+  filtered_data_block_ds1 <- reactive({
+    req(input$town_downsizing1, input$street_downsizing1, input$block_downsizing1)  # Require town, street, and block to be selected
+    filter(filtered_data_street_ds1(), block == input$block_downsizing1)
+  })
+  
+  # Update select input options for street based on selected town
+  observeEvent(input$town_downsizing1, {
+    updateSelectInput(session, "street_downsizing1", choices = c(sort(unique(filtered_data_town_ds1()$street_name))))
+  })
+  
+  # Update select input options for block based on selected town and street
+  observeEvent(c(input$town_downsizing1, input$street_downsizing1), {
+    updateSelectInput(session, "block_downsizing1", choices = c(sort(unique(filtered_data_street_ds1()$block))))
+  })
+  
+  # Update select input options for flat type based on selected town, street, and block
+  observeEvent(c(input$town_downsizing1, input$street_downsizing1, input$block_downsizing1), {
+    updateSelectInput(session, "flat_type_downsizing1", choices = c(sort(unique(filtered_data_block_ds1()$flat_type))))
+  })
+  
+  # Update select input options for flat model based on selected town, street, and block
+  observeEvent(c(input$town_downsizing1, input$street_downsizing1, input$block_downsizing1), {
+    updateSelectInput(session, "flat_model_downsizing1", choices = c(sort(unique(filtered_data_block_ds1()$flat_model))))
+  })
+  
+  
+  predicted_value1 <- reactiveVal(NULL)   # variable to store current flat value
+  
+  # Function to set predicted value
+  current_predicted <- function(value) {
+    predicted_value1(value)
+  }
+  
+  observeEvent(input$calculate_downsizing1, {
+    to_pred= resale_prices %>%
+      select(street_name, block, resale_price, year, month, town, flat_type, storey_range, floor_area_sqm, flat_model, remaining_lease,
+             max_floor_lvl, multistorey_carpark, precinct_pavilion, region, nearest_bus_distance, bus_within_2km,
+             nearest_park_distance, parks_within_2km, distance_to_nearest_hawker, hawkers_within_2km,
+             distance_to_nearest_healthcare, healthcare_within_2km, distance_to_nearest_mall,
+             malls_within_2km, distance_to_nearest_school, schools_within_2km,
+             distance_to_nearest_supermarket, supermarkets_within_2km,
+             nearest_mrt_lrt_distance, mrt_lrt_within_2km, distance_to_cbd) %>%
+      drop_na() %>%
+      filter(year>=2010 & year<2024) %>%
+      mutate(flat_type2=flat_type) %>%
+      mutate_at(vars(town, month, flat_type, flat_model, storey_range, multistorey_carpark, precinct_pavilion), as.factor) %>%
+      mutate(id=row_number()) %>%
+      mutate(remaining_lease=remaining_lease - (2024-as.numeric(as.character(year))))
+    to_pred2=fastDummies::dummy_cols(to_pred, select_columns=c("town", "storey_range", "flat_type", "multistorey_carpark", "flat_model", "precinct_pavilion"), remove_first_dummy=TRUE, remove_selected_columns=TRUE)
+    colnames(to_pred2)=gsub(" ","_",colnames(to_pred2))
+    colnames(to_pred2)=gsub("/","_",colnames(to_pred2))
+    colnames(to_pred2)=gsub("-","_",colnames(to_pred2))
+    to_pred2= to_pred2 %>%
+      filter(street_name==tolower(input$street_downsizing1) & block==input$block_downsizing1 & flat_type2==tolower(input$flat_type_downsizing1)) %>%
+      slice_tail(n=1) %>%
+      mutate(year_2011=0, year_2012=0, year_2013=0, year_2014=0, year_2015=0, year_2016=0, year_2017=0, year_2018=0, year_2019=0, year_2020=0, year_2021=0, year_2022=0, year_2023=1) %>%
+      mutate(month_2=0, month_3=0, month_4=0, month_5=0, month_6=0, month_7=0, month_8=0, month_9=0, month_10=0, month_11=0, month_12=0) %>%
+      mutate(floor_area_sqm=as.numeric(input$floor_area_downsizing1)) %>%
+      mutate(`flat_type_2_room`= case_when(tolower(input$flat_type_downsizing1)=="2 room" ~ 1,
+                                           .default = 0),
+             `flat_type_3_room`= case_when(tolower(input$flat_type_downsizing1)=="3 room" ~ 1,
+                                           .default = 0),
+             `flat_type_4_room`= case_when(tolower(input$flat_type_downsizing1)=="4 room" ~ 1,
+                                           .default = 0),
+             `flat_type_5_room`= case_when(tolower(input$flat_type_downsizing1)=="5 room" ~ 1,
+                                           .default = 0),
+             `flat_type_executive`= case_when(tolower(input$flat_type_downsizing1)=="executive" ~ 1,
+                                              .default = 0),
+             `flat_type_multi_generation`= case_when(tolower(input$flat_type_downsizing1)=="multi generation" ~ 1,
+                                                     .default = 0)) %>%
+      mutate(`flat_model_new_generation`= case_when(tolower(input$flat_model_downsizing1)=="new generation"  ~ 1,
+                                                    .default = 0),
+             `flat_model_improved`= case_when(tolower(input$flat_model_downsizing1)=="improved" ~ 1,
+                                              .default = 0),
+             `flat_model_model_a`= case_when(tolower(input$flat_model_downsizing1)=="model a" ~ 1,
+                                             .default = 0),
+             `flat_model_standard`= case_when(tolower(input$flat_model_downsizing1)=="standard" ~ 1,
+                                              .default = 0),
+             `flat_model_simplified`= case_when(tolower(input$flat_model_downsizing1)=="simplified" ~ 1,
+                                                .default = 0),
+             `flat_model_model_a_maisonette`= case_when(tolower(input$flat_model_downsizing1)=="model a-maisonette" ~ 1,
+                                                        .default = 0),
+             `flat_model_apartment`= case_when(tolower(input$flat_model_downsizing1)=="apartment" ~ 1,
+                                               .default = 0),
+             `flat_model_maisonette`= case_when(tolower(input$flat_model_downsizing1)=="maisonette" ~ 1,
+                                                .default = 0),
+             `flat_model_terrace`= case_when(tolower(input$flat_model_downsizing1)=="terrace" ~ 1,
+                                             .default = 0),
+             #`flat_type_executive`= case_when(tolower(input$flat_model_downsizing1)=="2-room" ~ 1,
+             #.default = 0),
+             `flat_model_improved_maisonette`= case_when(tolower(input$flat_model_downsizing1)=="improved-maisonette" ~ 1,
+                                                         .default = 0),
+             `flat_model_multi_generation`= case_when(tolower(input$flat_model_downsizing1)=="multi generation" ~ 1,
+                                                      .default = 0),
+             `flat_model_premium_apartment`= case_when(tolower(input$flat_model_downsizing1)=="premium apartment" ~ 1,
+                                                       .default = 0),
+             `flat_model_adjoined_flat`= case_when(tolower(input$flat_model_downsizing1)=="adjoined flat" ~ 1,
+                                                   .default = 0),
+             `flat_model_premium_maisonette`= case_when(tolower(input$flat_model_downsizing1)=="premium maisonette" ~ 1,
+                                                        .default = 0),
+             `flat_model_model_a2`= case_when(tolower(input$flat_model_downsizing1)=="model a2" ~ 1,
+                                              .default = 0),
+             `flat_model_dbss`= case_when(tolower(input$flat_model_downsizing1)=="dbss" ~ 1,
+                                          .default = 0),
+             `flat_model_type_s1`= case_when(tolower(input$flat_model_downsizing1)=="type s1" ~ 1,
+                                             .default = 0),
+             `flat_model_type_s2`= case_when(tolower(input$flat_model_downsizing1)=="type s2" ~ 1,
+                                             .default = 0),
+             `flat_model_premium_apartment_loft`= case_when(tolower(input$flat_model_downsizing1)=="premium apartment loft" ~ 1,
+                                                            .default = 0),
+             `flat_model_3gen`= case_when(tolower(input$flat_model_downsizing1)=="3gen" ~ 1,
+                                          .default = 0)) %>%
+      select(-c("street_name","block", "year","month","resale_price","id","flat_type2","region"))
+    
+    # Make prediction using your bagging model (replace `model_bagging` with your model object)
+    prediction <- round(exp(predict(model_bagging, newdata = to_pred2)[1]))
+    
+    current_predicted(prediction)
+  })
+  
+  output$current_price_pred <- renderText({
+    req(predicted_value1())
+    prediction <- predicted_value1()
+    paste("$", prediction)
+  })
+  
+  
+  ## New Resale Flat Prediction ##
+  
+  ## Prediction model Input filters ##
+  
+  # Reactive expression for filtered data
+  filtered_data_town_ds2 <- reactive({
+    req(input$town_downsizing2)  # Require town to be selected
+    filter(resale_prices, town == input$town_downsizing2)
+  })
+  
+  # Filtered data based on selected town and street
+  filtered_data_street_ds2 <- reactive({
+    req(input$town_downsizing2, input$street_downsizing2)  # Require town and street to be selected
+    filter(filtered_data_town_ds2(), street_name == input$street_downsizing2)
+  })
+  
+  # Filtered data based on selected town, street, and block
+  filtered_data_block_ds2 <- reactive({
+    req(input$town_downsizing2, input$street_downsizing2, input$block_downsizing2)  # Require town, street, and block to be selected
+    filter(filtered_data_street_ds2(), block == input$block_downsizing2)
+  })
+  
+  # Update select input options for street based on selected town
+  observeEvent(input$town_downsizing2, {
+    updateSelectInput(session, "street_downsizing2", choices = c(sort(unique(filtered_data_town_ds2()$street_name))))
+  })
+  
+  # Update select input options for block based on selected town and street
+  observeEvent(c(input$town_downsizing2, input$street_downsizing2), {
+    updateSelectInput(session, "block_downsizing2", choices = c(sort(unique(filtered_data_street_ds2()$block))))
+  })
+  
+  # Update select input options for flat type based on selected town, street, and block
+  observeEvent(c(input$town_downsizing2, input$street_downsizing2, input$block_downsizing2), {
+    updateSelectInput(session, "flat_type_downsizing2", choices = c(sort(unique(filtered_data_block_ds2()$flat_type))))
+  })
+  
+  # Update select input options for flat model based on selected town, street, and block
+  observeEvent(c(input$town_downsizing2, input$street_downsizing2, input$block_downsizing2), {
+    updateSelectInput(session, "flat_model_downsizing2", choices = c(sort(unique(filtered_data_block_ds2()$flat_model))))
+  })
+  
+  
+  predicted_value2 <- reactiveVal(NULL)   # variable to store new flat value
+  
+  # Function to set predicted value
+  new_predicted <- function(value) {
+    predicted_value2(value)
+  }
+  
+  observeEvent(input$calculate_downsizing2, {
+    to_pred= resale_prices %>%
+      select(street_name, block, resale_price, year, month, town, flat_type, storey_range, floor_area_sqm, flat_model, remaining_lease,
+             max_floor_lvl, multistorey_carpark, precinct_pavilion, region, nearest_bus_distance, bus_within_2km,
+             nearest_park_distance, parks_within_2km, distance_to_nearest_hawker, hawkers_within_2km,
+             distance_to_nearest_healthcare, healthcare_within_2km, distance_to_nearest_mall,
+             malls_within_2km, distance_to_nearest_school, schools_within_2km,
+             distance_to_nearest_supermarket, supermarkets_within_2km,
+             nearest_mrt_lrt_distance, mrt_lrt_within_2km, distance_to_cbd) %>%
+      drop_na() %>%
+      filter(year>=2010 & year<2024) %>%
+      mutate(flat_type2=flat_type) %>%
+      mutate_at(vars(town, month, flat_type, flat_model, storey_range, multistorey_carpark, precinct_pavilion), as.factor) %>%
+      mutate(id=row_number()) %>%
+      mutate(remaining_lease=remaining_lease - (2024-as.numeric(as.character(year))))
+    to_pred2=fastDummies::dummy_cols(to_pred, select_columns=c("town", "storey_range", "flat_type", "multistorey_carpark", "flat_model", "precinct_pavilion"), remove_first_dummy=TRUE, remove_selected_columns=TRUE)
+    colnames(to_pred2)=gsub(" ","_",colnames(to_pred2))
+    colnames(to_pred2)=gsub("/","_",colnames(to_pred2))
+    colnames(to_pred2)=gsub("-","_",colnames(to_pred2))
+    to_pred2= to_pred2 %>%
+      filter(street_name==tolower(input$street_downsizing2) & block==input$block_downsizing2 & flat_type2==tolower(input$flat_type_downsizing2)) %>%
+      slice_tail(n=1) %>%
+      mutate(year_2011=0, year_2012=0, year_2013=0, year_2014=0, year_2015=0, year_2016=0, year_2017=0, year_2018=0, year_2019=0, year_2020=0, year_2021=0, year_2022=0, year_2023=1) %>%
+      mutate(month_2=0, month_3=0, month_4=0, month_5=0, month_6=0, month_7=0, month_8=0, month_9=0, month_10=0, month_11=0, month_12=0) %>%
+      mutate(floor_area_sqm=as.numeric(input$floor_area_downsizing2)) %>%
+      mutate(`flat_type_2_room`= case_when(tolower(input$flat_type_downsizing2)=="2 room" ~ 1,
+                                           .default = 0),
+             `flat_type_3_room`= case_when(tolower(input$flat_type_downsizing2)=="3 room" ~ 1,
+                                           .default = 0),
+             `flat_type_4_room`= case_when(tolower(input$flat_type_downsizing2)=="4 room" ~ 1,
+                                           .default = 0),
+             `flat_type_5_room`= case_when(tolower(input$flat_type_downsizing2)=="5 room" ~ 1,
+                                           .default = 0),
+             `flat_type_executive`= case_when(tolower(input$flat_type_downsizing2)=="executive" ~ 1,
+                                              .default = 0),
+             `flat_type_multi_generation`= case_when(tolower(input$flat_type_downsizing2)=="multi generation" ~ 1,
+                                                     .default = 0)) %>%
+      mutate(`flat_model_new_generation`= case_when(tolower(input$flat_model_downsizing2)=="new generation"  ~ 1,
+                                                    .default = 0),
+             `flat_model_improved`= case_when(tolower(input$flat_model_downsizing2)=="improved" ~ 1,
+                                              .default = 0),
+             `flat_model_model_a`= case_when(tolower(input$flat_model_downsizing2)=="model a" ~ 1,
+                                             .default = 0),
+             `flat_model_standard`= case_when(tolower(input$flat_model_downsizing2)=="standard" ~ 1,
+                                              .default = 0),
+             `flat_model_simplified`= case_when(tolower(input$flat_model_downsizing2)=="simplified" ~ 1,
+                                                .default = 0),
+             `flat_model_model_a_maisonette`= case_when(tolower(input$flat_model_downsizing2)=="model a-maisonette" ~ 1,
+                                                        .default = 0),
+             `flat_model_apartment`= case_when(tolower(input$flat_model_downsizing2)=="apartment" ~ 1,
+                                               .default = 0),
+             `flat_model_maisonette`= case_when(tolower(input$flat_model_downsizing2)=="maisonette" ~ 1,
+                                                .default = 0),
+             `flat_model_terrace`= case_when(tolower(input$flat_model_downsizing2)=="terrace" ~ 1,
+                                             .default = 0),
+             #`flat_type_executive`= case_when(tolower(input$flat_model_downsizing2)=="2-room" ~ 1,
+             #.default = 0),
+             `flat_model_improved_maisonette`= case_when(tolower(input$flat_model_downsizing2)=="improved-maisonette" ~ 1,
+                                                         .default = 0),
+             `flat_model_multi_generation`= case_when(tolower(input$flat_model_downsizing2)=="multi generation" ~ 1,
+                                                      .default = 0),
+             `flat_model_premium_apartment`= case_when(tolower(input$flat_model_downsizing2)=="premium apartment" ~ 1,
+                                                       .default = 0),
+             `flat_model_adjoined_flat`= case_when(tolower(input$flat_model_downsizing2)=="adjoined flat" ~ 1,
+                                                   .default = 0),
+             `flat_model_premium_maisonette`= case_when(tolower(input$flat_model_downsizing2)=="premium maisonette" ~ 1,
+                                                        .default = 0),
+             `flat_model_model_a2`= case_when(tolower(input$flat_model_downsizing2)=="model a2" ~ 1,
+                                              .default = 0),
+             `flat_model_dbss`= case_when(tolower(input$flat_model_downsizing2)=="dbss" ~ 1,
+                                          .default = 0),
+             `flat_model_type_s1`= case_when(tolower(input$flat_model_downsizing2)=="type s1" ~ 1,
+                                             .default = 0),
+             `flat_model_type_s2`= case_when(tolower(input$flat_model_downsizing2)=="type s2" ~ 1,
+                                             .default = 0),
+             `flat_model_premium_apartment_loft`= case_when(tolower(input$flat_model_downsizing2)=="premium apartment loft" ~ 1,
+                                                            .default = 0),
+             `flat_model_3gen`= case_when(tolower(input$flat_model_downsizing2)=="3gen" ~ 1,
+                                          .default = 0)) %>%
+      select(-c("street_name","block", "year","month","resale_price","id","flat_type2","region"))
+    
+    prediction <- round(exp(predict(model_bagging, newdata = to_pred2)[1]), 0)
+    new_predicted(prediction)
+  })
+  
+  output$new_price_pred <- renderText({
+    req(predicted_value2())
+    prediction <- predicted_value2()
+    paste("$", prediction)
+  })
+  
+  output$downsize_savings <- renderText({
+    req(predicted_value1())
+    req(predicted_value2())
+    ds_savings <- predicted_value1() - predicted_value2()
+    paste("$", ds_savings)
+  })
+  
+  
+  ### Lease Buyback Scheme ###
+  
+  observe({
+    num_owners <- as.integer(input$owners)
+    age_owner1 <- input$age_owner1
+    age_owner2 <- input$age_owner2
+    
+    # Check for NA values in age_owner1 and age_owner2
+    if (!is.na(num_owners) && !is.na(age_owner1)) {
+      # Determine the age to set the lease options
+      owner_age <- ifelse(num_owners == 1, age_owner1, min(age_owner1, age_owner2))
+      
+      if (owner_age >= 65 & owner_age <= 69) {
+        updateSelectInput(session, "lease_retained", choices = c("30", "35"))
+      } else if (owner_age >= 70 & owner_age <= 74) {
+        updateSelectInput(session, "lease_retained", choices = c("25", "30", "35"))
+      } else if (owner_age >= 75 & owner_age <= 79) {
+        updateSelectInput(session, "lease_retained", choices = c("20", "25", "30", "35"))
+      } else if (owner_age >= 80) {
+        updateSelectInput(session, "lease_retained", choices = c("20", "25", "30", "35"))
+      }
+    }
+  })
+  
+  calculate_top_up1 <- function(age) {    # top up criteria for 1 owner (FRS)
+    if (age >= 65 && age <= 69) {
+      return("205,800")
+    } else if (age >= 70 && age <= 79) {
+      return("195,800")
+    } else if (age >= 80) {
+      return("185,800")
+    } else {
+      return("0")
+    }
+  }
+  
+  calculate_top_up2 <- function(age) {    # top up criteria for 2 owners (BRS)
+    if (age >= 65 && age <= 69) {
+      return("102,900")
+    } else if (age >= 70 && age <= 79) {
+      return("97,900")
+    } else if (age >= 80) {
+      return("92,900")
+    } else {
+      return("0")
+    }
+  }
+  
+  output$top_up_owner1 <- renderText({
+    if (input$age_owner1 != ""){
+      if (input$owners == "1"){
+        calculate_top_up1(input$age_owner1)
+      } else{
+        calculate_top_up2(input$age_owner1)
+      }
+    } else{""}
+  })
+  
+  output$top_up_owner2 <- renderText({
+    if (input$age_owner2 != ""){
+      if (input$owners == "2"){
+        calculate_top_up2(input$age_owner2)
+      }
+    } else{""}
+  })
+  
+  output$difference_message <- renderText({
+    req(input$lease_balance)
+    req(input$lease_retained)
+    lease_balance <- input$lease_balance
+    lease_retained <- input$lease_retained
+    difference <- as.numeric(lease_balance) - as.numeric(lease_retained)
+    if (!is.null(difference)){
+      paste("Lease to Sell:", difference, "years")
+    } else {
+      paste(" ")
+    }
+  })
+  
+  # Function to calculate the value of remaining lease
+  calc_tailend <- function(market_value, lease_retained, balas){
+    percentage <- balas$Percentage[balas$Years == lease_retained]
+    tailend_lease_value <- market_value - market_value*(percentage/100)
+    return(tailend_lease_value)
+  }
+  
+  calculate_lease <- reactive({
+    req(predicted_value1())
+    market_value <- predicted_value1()
+    lease_retained <- as.numeric(input$lease_retained)
+    balance_lease <- as.numeric(input$lease_balance)
+    
+    if (!is.na(lease_retained) && !is.na(balance_lease)) {
+      if (lease_retained > balance_lease) {
+        return(NULL)
+      } else {
+        tailend_value <- calc_tailend(market_value, lease_retained, balas)
+        return(tailend_value)  # Return the calculated value
+      }
+    } else {
+      return(NULL)
+    }
+  })
+  
+  # Render the value_of_lease output
+  output$value_of_lease <- renderText({
+    soldvalue <- calculate_lease()
+    if (!is.null(soldvalue)) {
+      paste("$", round(soldvalue, 0))
+    }
+  })
+  
+  
+  calculate_bonus <- function(top_up_amount, flat_type) {     # calculating LBS bonus
+    req(top_up_amount)
+    if (is.null(top_up_amount) || flat_type == ""){
+      return("")
+    }
+    else{
+      if (top_up_amount >= 60000) {
+        if (flat_type == "1 room" || flat_type == "2 room" || flat_type == "3 room") {
+          return(30000)
+        } else if (flat_type == "4 room") {
+          return(15000)
+        } else {  # For 5 room and bigger flats
+          return(7500)
+        }}
+      else {
+        # Calculate prorated bonus based on top-up amount and flat size
+        if (flat_type == "1 room" || flat_type == "2 room" || flat_type == "3 room") {          
+          bonus_rate <- 2  # $1 for every $2 top up
+        } else if (flat_type == "4 room") {
+          bonus_rate <- 4  # $1 for every $4 top up
+        } else {  # For 5 room and bigger flats
+          bonus_rate <- 8  # $1 for every $8 top up        
+        }
+        prorated_bonus <- top_up_amount / bonus_rate
+        return(prorated_bonus)
+      } 
+    }
+  }
+  
+  output$lbs_bonus <- renderText({
+    bonus <- calculate_bonus(input$intended_top_up, input$flat_type_downsizing1)
+    if (bonus != "") {
+      paste("$", bonus)
+    } else {paste(" ")}
+  })
+  
+  output$lbs_total <- renderText({
+    req(calculate_lease())
+    lease_val <- calculate_lease()
+    total <- round((lease_val - input$intended_top_up + calculate_bonus(input$intended_top_up, input$flat_type_downsizing1)), 0)
+    if (total != "" || !is.null(bonus)){
+      paste("$", total)
+    } else{paste("")}
+  })
+  
+  
+  
+  ### 3. "Summary" Tab ###
+  
+  ## 3.1 Preparing the Input options ##
+  
+  # Update street name based on selected town
+  observe({
+    updateSelectInput(session, "street3", 
+                      choices = c("All", sort(unique(resale_prices$street_name[resale_prices$town == input$town3]))), selected = "All")
+  })
+  
+  # Removing "2024" from year input option
+  observe({
+    updateSelectInput(session, "year3", 
+                      choices = c("All", unique(resale_prices$year[resale_prices$year != 2024])), selected = "2023")
+  })
+  
+  
+  
+  ## 3.2 Filtering Data for each of the visualizations ##
+  
+  # 3.2.1 Filtering the data for donut charts
+  filtered_donuts <- reactive({
+    req(input$town3, input$year3, input$street3)
+    
+    data <- resale_prices %>%
+      filter(town == input$town3)  # Filter by town first
+    
+    if (input$year3 != "All") {
+      data <- data %>%
+        filter(year == input$year3)  # Further filter by year if necessary
+    }
+    
+    if (input$street3 != "All") {
+      data <- data %>%
+        filter(street_name == input$street3)  # Further filter by street if necessary
+    }
+    
+    data
+  })
+  
+  
+  # 3.2.2. Filtering the data for the line graph (independent of year and street)
+  
+  filtered_line <- reactive({
+    resale_prices %>%
+      filter(town == input$town3)
+  })
+  
+  # 3.2.3. Filtering the data for population demographic
+  
+  filtered_demographic <- reactive({
+    demographic %>%
+      filter(town_estate == input$town3)
+  })
+  
+  
+  # 3.2.4. Calculate Average Square Meter for the town
+  
+  avg_sqm <- reactive({
+    filtered_data3 <- filtered_donuts()
+    avg_sqm <- mean(filtered_data3$floor_area_sqm)
+    avg_sqm
+  })
+  
+  # Display average square meter for the town
+  output$avg_sqm <- renderText({
+    paste(round(avg_sqm(), 0))
+  })
+  
+  
+  # 3.2.5. Calculate average resale price per sqm for the town
+  
+  avg_resale_price <- reactive({
+    filtered_data3 <- filtered_donuts()
+    avg_resale_price <- mean(filtered_data3$resale_price)
+    avg_resale_price
+  })
+  
+  # Display average square meter for the town
+  output$avg_resale_price <- renderText({
+    paste("$", round(avg_resale_price(), 0))
+  })
+  
+  
+  #3.2.6 Display number of transactions 
+  
+  num_tran <- reactive({
+    filtered_data3 <- filtered_donuts() 
+    num_tran <- nrow(filtered_data3)
+    return(num_tran)
+  })
+  
+  output$num_tran <- renderText({
+    paste(num_tran())
+  })
+  
+  
+  ## 3.3 Plotting the Graphs ##
+  
+  # 3.3.1 Donut Chart for Flat types
+  output$flat_type_pie <- renderPlotly({
+    flat_type_counts <- filtered_donuts() %>%
+      mutate(flat_type = factor(flat_type)) %>%
+      count(flat_type)
+    
+    plot_ly(flat_type_counts, labels = ~flat_type, values = ~n, type = "pie", 
+            hole = 0.5, textposition = "inside", 
+            hoverinfo = 'percent+label') %>%
+      layout(
+        showlegend = FALSE,
+        margin = list(l = 2, r = 2, b = 5, t = 2)
+      )
+  })
+  
+  
+  # 3.3.2 Donut Chart for Storey range
+  output$storey_range_pie <- renderPlotly({
+    storey_range_counts <- filtered_donuts() %>%
+      mutate(storey_range = factor(storey_range)) %>%
+      count(storey_range)
+    
+    plot_ly(storey_range_counts, labels = ~storey_range, values = ~n, type = "pie", 
+            hole = 0.5, textposition = "inside", 
+            hoverinfo = 'percent+label') %>%    
+      layout(
+        showlegend = FALSE,
+        margin = list(l = 2, r = 2, b = 5, t = 2)    # adjust plot margins
+      )
+  })
+  
+  
+  # 3.3.3. Line graph for Median Resale Price over the years
+  output$median_price_line <- renderPlotly({
+    median_prices <- filtered_line() %>%
+      group_by(year) %>%
+      summarize(median_price = median(resale_price))
+    
+    plot_ly(data = median_prices, x = ~year, y = ~median_price, type = "scatter", mode = "lines") %>%
+      layout(
+        xaxis = list(title = "Year"), 
+        yaxis = list(title = "Median Resale Price"), 
+        
+        margin = list(l = 5, r = 5, b = 5, t = 5)
+      )
+  })
+  
+  
+  # 3.3.4. Bar plot for Population distribution
+  output$demographics_bar <- renderPlotly({
+    demographic <- filtered_demographic()
+    
+    demographic$age_group <- factor(demographic$age_group, 
+                                    level = c("Below 15", "15  -  24", "25  -  34", "35  -  44", "45  -  54", "55  -  64", "65 & Above"))
+    
+    plot_ly(demographic, x = ~popbyage, y = ~age_group, type = "bar", orientation = "h",
+            marker = list(color = "skyblue")) %>%
+      layout(
+        xaxis = list(title = "Age Group"), 
+        yaxis = list(title = "Population"), 
+        margin = list(l = 5, r = 5, b = 5, t = 5))
+  })
+  
+  # Reactive expression for filtered data
+  filtered_table <- reactive({
+    req(input$town3, input$year3, input$street3)
+    resale_prices %>% filter(year == input$year3, town == input$town3, street_name == input$street3)
+  })
+  
+  # Create top amenities dataframe
+  top_amenities <- reactive({
+    # For Nearest Bus
+    nearest_bus <- filtered_table() %>%
+      group_by(bus_station_name) %>%
+      summarize(mean_dist = mean(nearest_bus_distance)) %>%
+      mutate(amenities_type = "Bus Stop", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = bus_station_name, amenities_dist = mean_dist)
+    
+    # For Nearest MRT
+    nearest_mrt <- filtered_table() %>%
+      group_by(mrt_lrt_station_name) %>%
+      summarize(mean_dist = mean(nearest_mrt_lrt_distance)) %>%
+      mutate(amenities_type = "MRT/LRT Station", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = mrt_lrt_station_name, amenities_dist = mean_dist)
+    
+    # For Nearest Hawker
+    nearest_hawker <- filtered_table() %>%
+      group_by(nearest_hawker) %>%
+      summarize(mean_dist = mean(distance_to_nearest_hawker)) %>%
+      mutate(amenities_type = "Hawker Centre", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = nearest_hawker, amenities_dist = mean_dist)
+    
+    # For Nearest Mall
+    nearest_mall <- filtered_table() %>%
+      group_by(mall) %>%
+      summarize(mean_dist = mean(distance_to_nearest_mall)) %>%
+      mutate(amenities_type = "Shopping Mall", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = mall, amenities_dist = mean_dist)
+    
+    # For Nearest School
+    nearest_school <- filtered_table() %>%
+      group_by(school) %>%
+      summarize(mean_dist = mean(distance_to_nearest_school)) %>%
+      mutate(amenities_type = "School", mean_dist = round(mean_dist, 2)) %>% 
+      rename(amenities_name = school, amenities_dist = mean_dist)
+    
+    # Combine all results into one dataframe
+    all_amenities <- rbind(nearest_bus, nearest_mrt, nearest_hawker, nearest_mall, nearest_school)
+    
+    # Return top amenities
+    all_amenities %>% group_by(amenities_type) %>%
+      slice_min(order_by = amenities_dist, n = 1)
+  })
+  
+  # Render datatable
+  output$nearest_amenities_table <- renderDT({
+    top_amenities() %>%
+      rename("Amenity Type" = amenities_type,
+             "Amenity Name" = amenities_name,
+             "Dist To Amenity (m)" = amenities_dist) %>%
+      select("Amenity Type", everything())
+  }, options = list(dom = 't',  searching = FALSE))
+  
+  
+  ### 5. About Tab ###
+  
+  output$aboutimg <- renderImage({
+    list(src = "housing1.jpg",
+         width = "100%",
+         height = 330,
+         preserveAspectRatio = TRUE)
+  }, deleteFile = F)
+  
+  
+}
+
+shinyApp(ui = ui, server = server)
+
