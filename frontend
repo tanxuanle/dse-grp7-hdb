@@ -13,7 +13,6 @@ library(bslib)
 library(shinythemes)
 library(fastDummies)
 library(ipred)
-library(rsconnect)
 
 ############################## READING DATA ###################################
 
