@@ -1,0 +1,142 @@
+library(tidyverse)
+
+#install.packages("fastDummies")
+#install.packages("car")
+library(fastDummies)
+library(car)
+
+final1 = resale_prices %>%
+  rename(region = Region) %>%
+  #rename(school_name = school, mall_name = mall, healthcare_name = healthcare) %>%
+  dplyr::select(resale_price, year, month, town, flat_type, storey_range, floor_area_sqm, flat_model, remaining_lease, max_floor_lvl, multistorey_carpark, precinct_pavilion, region, nearest_bus_distance, bus_within_2km, nearest_park_distance, parks_within_2km, distance_to_nearest_hawker, hawkers_within_2km, distance_to_nearest_healthcare, healthcare_within_2km, distance_to_nearest_mall, malls_within_2km, distance_to_nearest_school, schools_within_2km, distance_to_nearest_supermarket, supermarkets_within_2km, nearest_mrt_lrt_distance, mrt_lrt_within_2km, distance_to_cbd) %>%
+  filter(year != 2024) %>%
+  drop_na() %>%
+  filter(year >= 2010) %>%
+  mutate_at(vars(year, town, month, flat_type, storey_range, flat_model, multistorey_carpark, precinct_pavilion, region), as.factor) %>%
+  mutate(id=row_number()) 
+
+set.seed(1) #20%-30 for training instead 
+trainsample= final1 %>%
+  group_by(year, flat_type) %>%
+  slice_sample(prop=0.2) %>%
+  mutate(resale_price_lg = log(resale_price))
+
+testsample= anti_join(final1, trainsample, by="id") %>%
+  mutate(resale_price_lg = log(resale_price))
+
+  factors_train = trainsample %>%
+  dplyr::select(-c(multistorey_carpark, region)) %>%
+  dplyr::select_if(is.factor) %>% 
+  fastDummies::dummy_cols(remove_first_dummy = TRUE) %>%
+  dplyr::select(year_2011:precinct_pavilion_Y) %>%
+  mutate(id = row_number())
+
+colnames(factors_train) <- gsub(" ", "_", colnames(factors_train))
+
+trainsample1 = trainsample %>%
+  mutate(id = row_number()) %>%
+  left_join(factors_train, by = "id") %>%
+  ungroup()
+
+factors_test = testsample %>%
+  dplyr::select(-c(multistorey_carpark, region)) %>%
+  dplyr::select_if(is.factor) %>% 
+  fastDummies::dummy_cols(remove_first_dummy = TRUE) %>%
+  dplyr::select(year_2011:precinct_pavilion_Y) %>%
+  mutate(id = row_number()) 
+
+colnames(factors_test) <- gsub(" ", "_", colnames(factors_test))
+
+testsample1 = testsample %>%
+  mutate(id = row_number()) %>%
+  left_join(factors_test, by = "id") %>%
+  ungroup() 
+
+#running the model
+library(randomForest)
+library(MASS)
+#install.packages("e1071")
+#install.packages("caret")
+#install.packages("rpart")
+#install.packages("ipred")
+library(e1071)       #for calculating variable importance
+library(caret)       #for general model fitting
+library(rpart)       #for fitting decision trees
+library(ipred)       #for fitting bagged decision trees
+
+trainsample4 = trainsample1 %>%
+  dplyr::select(resale_price_lg, floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y)
+
+colnames(trainsample4) <- gsub("/", "_", colnames(trainsample4))
+colnames(trainsample4) <- gsub("-", "_", colnames(trainsample4))
+
+#Recall bagging is achieved with mtry=P, since here we have 120 predictors, set mtry=120:
+#model_bagging_1 = randomForest(resale_price_lg~., data=trainsample4, ntree=5000, maxnodes=10, mtry=120)
+#we found that model_bagging_1 has a high rsme so we changed to another package 
+
+model_bagging_9 = bagging(formula = resale_price_lg ~ ., data = trainsample4, nbagg = 75, coob = TRUE, control = rpart.control(minsplit = 2, cp = 0))
+  
+#importance(model_bagging_1)
+
+#getting the residual for model_bagging_9
+testsample4 = testsample1 %>%
+  dplyr::select(floor_area_sqm, remaining_lease:max_floor_lvl, nearest_bus_distance:distance_to_cbd, year_2011:precinct_pavilion_Y) 
+
+colnames(testsample4) <- gsub("/", "_", colnames(testsample4))
+colnames(testsample4) <- gsub("-", "_", colnames(testsample4))
+
+predicted = data.frame(predict(model_bagging_9, newdata = testsample4))
+colnames(predicted) = c("prediction_lg")
+
+with_residual4 = testsample1 %>%
+  dplyr::select(resale_price_lg, town, year) %>%
+  cbind(predicted) %>%
+  mutate(resale_price_actual = exp(resale_price_lg), prediction_actual = exp(prediction_lg)) %>%
+  mutate(residual = resale_price_actual - prediction_actual, year_graph = as.Date(year, "%Y"))
+
+min(with_residual4$residual)
+max(with_residual4$residual)
+mean(abs(with_residual4$residual))
+median(abs(with_residual4$residual))
+
+
+residual_town_years4 = with_residual4 %>%
+  group_by(year, town) %>%
+  summarise(mean_residual = mean(abs(residual)), .groups = "drop") %>%
+  arrange(mean_residual)
+
+residual_town_years4 %>%
+  filter(year == 2023) %>%
+  tail(n=10)
+
+residual_years4 = with_residual4 %>%
+  group_by(year) %>%
+  summarise(count = n(), mean_residual_bagging = mean(abs(residual)), MSE_bagging = (sum(residual)^2)/count, .groups = "drop") %>%
+  dplyr::select(year, mean_residual_bagging, MSE_bagging) %>%
+  arrange(mean_residual_bagging) 
+
+residual_years4
+library(Metrics)
+rmse(with_residual4$prediction_actual, with_residual4$resale_price_actual)
+
+#getting the residual graph
+library(ggplot2)
+library(tidyverse)
+
+with_residual4_1 = with_residual4 %>%
+  mutate(town = fct_relevel(town, c("sembawang", "bukit batok", "yishun", "woodlands", "punggol", "choa chu kang", "jurong west", "ang mo kio", "jurong east", "bedok", "sengkang", "bukit panjang", "clementi", "hougang", "tampines", "marine parade","geylang", "queenstown", "pasir ris", "toa payoh", "bukit merah", "kallang/whampoa", "serangoon", "central area", "bishan", "bukit timah")))
+
+plot2 = ggplot(data = with_residual4_1) +
+  facet_wrap(~town) + 
+  geom_point(aes(x = year_graph, y = residual), color = "orange", alpha = 0.3) +
+  geom_abline(slope = 0, intercept = 0) +
+  #geom_line(aes(x = year, y = prediction_actual), color = "red") + 
+  #geom_ribbon(aes(ymin=resale_price_actual,ymax=prediction_actual), fill="grey", alpha=0.5)
+  scale_x_date(date_labels = "%y", date_breaks = "2 years") +
+  #scale_x_continuous(breaks=seq(from = 10, to = 23, by = 2))
+  labs(y = "Residual", x = "Year", title = "Trend of residuals across towns between 2010 - 2023", subtitle = "Positive residuals indicate actual prices > predicted <=> Negative residuals indicate actual prices < predicted.", caption = "Towns are arranged from lowest to highest mean residuals in 2023, so from lowest to highest land value.")
+
+plot2
+  
+
+
