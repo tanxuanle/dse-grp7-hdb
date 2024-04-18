@@ -10,17 +10,14 @@ Our web application serves as a comprehensive resource for all prospective buyer
 * Visit our Google Drive to access all data files required for our application.
 https://drive.google.com/drive/folders/1rVIPNjGgv1XRqYiTPv0tMLv75ieVhhzr?usp=sharing
 
-Note: Most data files are uploaded in /data except for model_bagging_9.rds and resale_prices.csv.
+**2. Save all downloaded files in the same directory.**
 
-**2. Access our application code file under /frontend in the main branch.**
-* Download the code file and save it in the same directory as the data files.
-
-**3. Run the application on your local system using RStudio.**
+**3. Run the application app.R on your local system using RStudio.**
 * Ensure that you have the required packages installed.
 The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, leaflet, RColorBrewer, stringr, DT, bslib, shinythemes, fastDummies, ipred.
 
-* Run the application code file in your RStudio. 
-
+* Run the application code file in your RStudio.
+  
 
 ## Data Sources:
 1. Resale HDB data: data.gov.sg <br>
