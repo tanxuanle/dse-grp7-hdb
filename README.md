@@ -33,28 +33,31 @@ https://beta.data.gov.sg/collections/1749/datasets/d_8594ae9ff96d0c708bc2af63304
 3. Sample Household Survey: HDB Resident Population by Geographical Distribution: data.gov.sg <br>
 https://beta.data.gov.sg/collections/179/datasets/d_0a6c6d71f6fa14e2d27e406f1d018439/view
 
-4. Hawker Centres: nea.gov.sg <br>
+4. Average and Median Monthly Household Income from Work Among Resident and Resident Employed Households: singstat.gov.sg 
+https://tablebuilder.singstat.gov.sg/table/CT/17870#!
+
+6. Hawker Centres: nea.gov.sg <br>
 https://www.nea.gov.sg/docs/default-source/hawker-centres-documents/list-of-hcs_28-sep-2023.pdf
 
-5. General information of schools: data.gov.sg <br> 
+7. General information of schools: data.gov.sg <br> 
 https://beta.data.gov.sg/datasets/d_688b934f82c1059ed0a6993d2a829089/view 
 
-6. Supermarkets: data.gov.sg <br> 
+8. Supermarkets: data.gov.sg <br> 
 https://beta.data.gov.sg/datasets/d_11edd0117280c5776651d7891114c88c/view
 
-7. Shopping Malls: wikipedia.org <br> 
+9. Shopping Malls: wikipedia.org <br> 
 https://en.wikipedia.org/wiki/List_of_shopping_malls_in_Singapore
 
-8. Hospitals and Polyclinics: wikipedia.org <br> 
+10. Hospitals and Polyclinics: wikipedia.org <br> 
 https://en.wikipedia.org/wiki/List_of_hospitals_in_Singapore 
 
-9. Parks: data.gov.sg <br> 
+11. Parks: data.gov.sg <br> 
 https://beta.data.gov.sg/collections/1491/datasets/d_e7289d9a50e45bf1174590e184e6631c/view 
 
-10. Buses: wikipedia.org <br> 
+12. Buses: wikipedia.org <br> 
 https://en.wikipedia.org/wiki/List_of_bus_routes_in_Singapore
 
-11. MRT and LRT: mrtmapsingapore.com <br> 
+13. MRT and LRT: mrtmapsingapore.com <br> 
 MRT: https://mrtmapsingapore.com/mrt-stations-singapore/ <br> 
 LRT:  https://mrtmapsingapore.com/lrt-stations/ 
 
