@@ -24,7 +24,7 @@ The packages required are: shiny, plotly, dplyr, shinyWidgets, tidyverse, sf, le
 
 ## Data Sources:
 1. Resale HDB data: data.gov.sg <br>
-https://beta.data.gov.sg/collections/189/datasets/d_ebc5ab87086db484f88045b47411ebc5/view
+https://beta.data.gov.sg/collections/189/datasets/d_ebc5ab87086db484f88045b47411ebc5/view <br> 
 Data wrangling is conducted to obtain the summarised dataset ("resale_prices.csv") for HDB Resale data from 2010 to 2024.
 
 2. Master Plan 2019 Subzone Boundary (No Sea): data.gov.sg <br>
